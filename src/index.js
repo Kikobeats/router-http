@@ -16,9 +16,20 @@ const value = x => {
   return y > 1 ? x.substring(0, y) : x
 }
 
+const parse = ({ url }) => {
+  const index = url.indexOf('?', 1)
+  const obj = { pathname: url, query: null, search: null }
+  if (index !== -1) {
+    obj.search = url.substring(index)
+    obj.query = obj.search.substring(1)
+    obj.pathname = url.substring(0, index)
+  }
+  return obj
+}
+
 const mutate = (str, req) => {
-  req.url = req.url.substring(str.length) || '/'
-  req.path = req.path.substring(str.length) || '/'
+  req.url = req.url.substring(str.length) ?? '/'
+  req.path = req.path.substring(str.length) ?? '/'
 }
 
 class Router extends Trouter {
@@ -52,7 +63,7 @@ class Router extends Trouter {
     } else {
       base = lead(base)
       fns.forEach(fn => {
-        const array = this.#middlewaresBy[base] || []
+        const array = this.#middlewaresBy[base] ?? []
         // eslint-disable-next-line no-sequences
         array.length > 0 || array.push((r, _, nxt) => (mutate(base, r), nxt()))
         this.#middlewaresBy[base] = array.concat(fn)
@@ -61,12 +72,12 @@ class Router extends Trouter {
     return this
   }
 
-  handler = (req, res, pathname) => {
-    pathname = pathname || req.url
+  handler = (req, res, info) => {
+    info = info ?? parse(req)
     let fns = []
     let middlewares = this.#middlewares
-    const route = this.find(req.method, pathname)
-    const base = value((req.path = pathname))
+    const route = this.find(req.method, info.pathname)
+    const base = value((req.path = info.pathname))
     if (this.#middlewaresBy[base] !== undefined) {
       middlewares = middlewares.concat(this.#middlewaresBy[base])
     }
@@ -75,6 +86,8 @@ class Router extends Trouter {
       req.params = { ...req.params, ...route.params }
     }
     fns.push(this.unhandler)
+    req.search = req.query ?? info.search
+    req.query = req.query ?? info.query
     // Exit if only a single function
     let i = 0
     let len = middlewares.length

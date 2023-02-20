@@ -17,9 +17,6 @@ While I was evaluating the market for finding an alternative I found [polka](htt
 
 - This module doesn't take care about the http.Server.
 - This module doesn't use any of the Node.js built-in module, so it can be used in Vercel Edge Functions, Deno or CF Workers.
-- This module doesn't add `req.query` nor `req.search` (check [to-query](https://github.com/Kikobeats/to-query) for that).
-
-In resume: this module does nothing beyond finding the correct path and matching the associated code.
 
 ## Install
 
@@ -34,8 +31,8 @@ First, you should to create a router:
 ```js
 const createRouter = require('router-http')
 
-const router = createRouter((err, req, res) => {
-  const hasError = err !== undefined
+const router = createRouter((error, req, res) => {
+  const hasError = error !== undefined
   res.statusCode = hasError ? 500 : 404
   res.end(hasError ? err.message : 'Not Found')
 })

@@ -62,7 +62,7 @@ test('define req.params', async t => {
   )
 })
 
-test('merge req.params', async t => {
+test('respect req.params', async t => {
   const router = Router(final)
 
   router.get('/greetings/:name', (req, res) => {
@@ -83,6 +83,49 @@ test('merge req.params', async t => {
       responseType: 'json'
     }),
     { name: 'kiko', fizz: 'buzz' }
+  )
+})
+
+test('respect req.query', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify(req.query))
+  })
+
+  const server = createServer((req, res) => {
+    req.query = { foo: 'bar' }
+    router(req, res)
+  })
+  const serverUrl = await listen(server)
+
+  t.teardown(() => close(server))
+
+  t.deepEqual(
+    await got(new URL('/?foo=barz', serverUrl).toString(), {
+      responseType: 'json'
+    }),
+    { foo: 'bar' }
+  )
+})
+
+test('respect req.search', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => res.end(req.search))
+
+  const server = createServer((req, res) => {
+    req.query = '?foo=bar'
+    router(req, res)
+  })
+  const serverUrl = await listen(server)
+
+  t.teardown(() => close(server))
+
+  t.deepEqual(
+    await got(new URL('/?foo=barz', serverUrl).toString()),
+    '?foo=bar'
   )
 })
 
@@ -254,11 +297,29 @@ test('multi `.use`', async t => {
 })
 
 test('catch exceptions', async t => {
-  const router = Router(final)
+  t.plan(8)
 
-  router.get('/', (req, res) => {
-    throw new Error('oh no')
+  const router = Router((err, req, res) => {
+    t.truthy(err)
+    t.truthy(req)
+    t.truthy(res)
+    res.statusCode = err ? 500 : 404
+    res.end(err ? err.message : 'Not Found')
   })
+
+  router
+    .use((req, res, next) => {
+      req.one = 'one'
+      next()
+    })
+    .use((req, res, next) => {
+      req.two = 'two'
+      next()
+    })
+    .get('/', (req, res) => {
+      throw new Error('oh no')
+    })
+    .get('/greetings', (req, res) => res.end('greetings!'))
 
   const server = createServer(router)
   const serverUrl = await listen(server)
@@ -314,7 +375,9 @@ test('unmatched route', async t => {
   t.is(await got(new URL('/users/123', serverUrl).toString()), 'Not Found')
 })
 
-test('get query from url', async t => {
+test("don't interfer with request query", async t => {
+  t.plan(5)
+
   const router = Router(final)
 
   const query = ({ url }) => {
@@ -323,7 +386,12 @@ test('get query from url', async t => {
       : {}
   }
 
-  router.get('/greetings/:name', (req, res) => {
+  router.get('/greetings', (req, res) => {
+    t.is(req.query, 'name=kiko&foo=bar')
+    t.is(req.search, '?name=kiko&foo=bar')
+    t.is(req.path, '/greetings')
+    t.is(req.pathname, undefined)
+
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify(query(req)))
   })
@@ -334,10 +402,11 @@ test('get query from url', async t => {
   t.teardown(() => close(server))
 
   t.deepEqual(
-    await got(new URL('/greetings/kiko?foo=bar', serverUrl).toString(), {
+    await got(new URL('/greetings?name=kiko&foo=bar', serverUrl).toString(), {
       responseType: 'json'
     }),
     {
+      name: 'kiko',
       foo: 'bar'
     }
   )
