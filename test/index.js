@@ -364,6 +364,14 @@ test('unmatched route', async t => {
   const router = Router(final)
 
   router
+    .use((req, res, next) => {
+      req.one = 'one'
+      next()
+    })
+    .use((req, res, next) => {
+      req.two = 'two'
+      next()
+    })
     .get('/favicon.ico', _ => {})
     .get('/', (req, res) => res.end('Hello'))
     .get('/user/:id', (req, res) => res.end(`User: ${req.params.id}`))

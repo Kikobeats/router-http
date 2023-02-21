@@ -89,26 +89,30 @@ class Router extends Trouter {
     req.search = req.query ?? info.search
     req.query = req.query ?? info.query
     // Exit if only a single function
-    let i = 0
-    let len = middlewares.length
+    let index = 0
+    let size = middlewares.length
     const num = fns.length
-    if (len === i && num === 1) return fns[0](undefined, req, res)
+    if (size === index && num === 1) return fns[0](undefined, req, res)
 
     // Otherwise loop thru all middlware
     const next = err => (err ? this.unhandler(err, req, res, next) : loop())
 
-    const loop = () => {
-      if (res.writableEnded) return
-      if (i >= len) return
-      try {
-        return middlewares[i++](req, res, next)
-      } catch (err) {
-        return next(err)
-      }
-    }
+    const loop = () =>
+      res.writableEnded ||
+      (index < size &&
+        (() => {
+          try {
+            const mware = middlewares[index++]
+            return index === size
+              ? mware(undefined, req, res, next)
+              : mware(req, res, next)
+          } catch (err) {
+            return this.unhandler(err, req, res, next)
+          }
+        })())
 
     middlewares = middlewares.concat(fns)
-    len += num
+    size += num
     loop() // init
   }
 }
