@@ -13,10 +13,7 @@ An HTTP router focused in only that, similar to [express@router](https://github.
 
 Don't get me wrong: The original Express router is a piece of art. I used it for years and I just considered create this library after experienced a bug that never was addressed in the stable version due to the [lack of maintenance](https://github.com/pillarjs/router/pull/60).
 
-While I was evaluating the market for finding an alternative I found [polka](https://github.com/lukeed/polka/tree/master/packages/polka) was a good starting point for creating a replacement. This module is different than polka in some aspects:
-
-- This module doesn't take care about the http.Server.
-- This module doesn't use any of the Node.js built-in module, so it can be used in Vercel Edge Functions, Deno or CF Workers.
+While I was evaluating the market for finding an alternative, I found [polka](https://github.com/lukeed/polka/tree/master/packages/polka) was a good starting point for creating a replacement. This module is different from polka in it isn't taking care about http.Server, it just acts as an isolated module.
 
 ## Install
 
