@@ -4,16 +4,15 @@
 [![Coverage Status](https://img.shields.io/coveralls/Kikobeats/router-http.svg?style=flat-square)](https://coveralls.io/github/Kikobeats/router-http)
 [![NPM Status](https://img.shields.io/npm/dm/router-http.svg?style=flat-square)](https://www.npmjs.org/package/router-http)
 
-An HTTP router focused in only that, similar to [express@router](https://github.com/pillarjs/router), but:
+A middleware style router, similar to [express@router](https://github.com/pillarjs/router), plus:
 
-- Focused in just one thing.
+- Faster (x3 compared with Express).
 - Maintained and well tested.
-- Smaller and portable (1.4 kB).
-- Most of router API is supported.
+- Smaller (1.4 kB).
 
 Don't get me wrong: The original Express router is a piece of art. I used it for years and I just considered create this library after experienced a bug that never was addressed in the stable version due to the [lack of maintenance](https://github.com/pillarjs/router/pull/60).
 
-While I was evaluating the market for finding an alternative, I found [polka](https://github.com/lukeed/polka/tree/master/packages/polka) was a good starting point for creating a replacement. This module is different from polka in it isn't taking care about http.Server, it just acts as an isolated module.
+While I was evaluating the market for finding an alternative, I found [polka](https://github.com/lukeed/polka/tree/master/packages/polka) was a good starting point for creating a replacement. This library is different from polka in that it only contains the code that is strictly necessary for routing, nothing else.
 
 ## Install
 
@@ -37,9 +36,9 @@ const router = createRouter((error, req, res) => {
 
 The router requires a final handler that will be called if an error occurred or none of the routes match.
 
-After that, you can declare any HTTP verb route:
-
 ### Declaring routes
+
+The routes are declared using HTTP verbs:
 
 ```js
 /**
@@ -97,6 +96,18 @@ router
   })
 ```
 
+Also, you can declare conditional middlewares:
+
+```js
+/**
+ * Just add the middleware if it's production environment
+ */
+router
+  .use(process.env.NODE_ENV === 'production' && authentication())
+```
+
+They are only will add if the condition is satisfied.
+
 ### Prefixing routes
 
 In case you need you can prefix all the routes:
@@ -123,16 +134,39 @@ const server = http.createServer(router)
 
 ## Benchmark
 
-The performance is essentially the same than polka, and that is almost x3 faster than express.
+**express@4.18.2**
 
-See [benchmark](/benchmark) sections.
+```
+Running 30s test @ http://localhost:3000/user/123
+  8 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     4.12ms  653.26us  21.71ms   89.35%
+    Req/Sec     2.93k   159.60     5.99k    84.75%
+  700421 requests in 30.06s, 102.87MB read
+Requests/sec:  23304.22
+Transfer/sec:      3.42MB
+```
+
+**router-http@1.0.0**
+
+```
+Running 30s test @ http://localhost:3000/user/123
+  8 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     1.33ms  690.36us  30.28ms   97.16%
+    Req/Sec     9.27k     1.09k   11.76k    89.58%
+  2214097 requests in 30.02s, 276.61MB read
+Requests/sec:  73754.53
+Transfer/sec:      9.21MB
+```
+
+See more details, check [benchmark](/benchmark) section.
 
 ## Related
 
 - [send-http](https://github.com/Kikobeats/send-http) – A `res.end` with data type detection.
 - [http-body](https://github.com/Kikobeats/http-body) – Parse the http.IncomingMessage body into text/json/buffer.
-- [http-compression](https://github.com/Kikobeats/http-compression) – Adding compression (gzip/brotli) for your HTTP server in Node.js
-- [to-query](https://github.com/Kikobeats/to-query) Get query object from a request url.
+- [http-compression](https://github.com/Kikobeats/http-compression) – Adding compression (gzip/brotli) for your HTTP server in Node.js.
 
 ## License
 
