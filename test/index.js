@@ -419,3 +419,18 @@ test("don't interfer with request query", async t => {
     }
   )
 })
+
+test('remove falsy middlewares', async t => {
+  const router = Router(final)
+  router
+    .use(false)
+    .use('/', false)
+    .use('/foo', false)
+    .get('/foo', (req, res) => res.end('greetings'))
+
+  const server = createServer(router)
+  const serverUrl = await listen(server)
+
+  t.teardown(() => close(server))
+  t.is(await got(new URL('/foo', serverUrl).toString()), 'greetings')
+})
