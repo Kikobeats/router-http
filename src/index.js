@@ -56,13 +56,13 @@ class Router extends Trouter {
    * .use('/v2', two)
    */
   use = (base = '/', ...fns) => {
-    if (typeof base === 'function') {
-      this.#middlewares = this.#middlewares.concat(base, fns)
+    if (typeof base === 'function' || typeof base === 'boolean') {
+      this.#middlewares = this.#middlewares.concat(base, fns).filter(Boolean)
     } else if (base === '/') {
-      this.#middlewares = this.#middlewares.concat(fns)
+      this.#middlewares = this.#middlewares.concat(fns).filter(Boolean)
     } else {
       base = lead(base)
-      fns.forEach(fn => {
+      fns.filter(Boolean).forEach(fn => {
         const array = this.#middlewaresBy[base] ?? []
         // eslint-disable-next-line no-sequences
         array.length > 0 || array.push((r, _, nxt) => (mutate(base, r), nxt()))
