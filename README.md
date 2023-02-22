@@ -29,7 +29,7 @@ const createRouter = require('router-http')
 
 const router = createRouter((error, req, res) => {
   const hasError = error !== undefined
-  res.statusCode = hasError ? error.code ?? 500 : 404
+  res.statusCode = hasError ? error.statusCode ?? 500 : 404
   res.end(hasError ? error.message ?? 'Internal Server Error' : 'Not Found')
 })
 ```
