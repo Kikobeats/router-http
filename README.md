@@ -118,7 +118,7 @@ routes.get('/', (req, res) => res.end('Welcome to my API!'))
 /**
  * Prefix all routes with the API version
  */
-const router = Router(final)
+const router = createRouter(final)
 router
   .use('/latest', routes)
   .use('/v1', routes)
