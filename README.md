@@ -170,6 +170,8 @@ See more details, check [benchmark](/benchmark) section.
 
 ## License
 
+Full credits to [Luke Edwards](https://github.com/lukeed) for writing [Polka](https://github.com/lukeed/polka) and inspired this project.
+
 **router-http** © [Kiko Beats](https://kikobeats.com), released under the [MIT](https://github.com/Kikobeats/router-http/blob/master/LICENSE.md) License.<br>
 Authored and maintained by [Kiko Beats](https://kikobeats.com) with help from [contributors](https://github.com/Kikobeats/router-http/contributors).
 
