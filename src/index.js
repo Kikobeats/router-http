@@ -49,24 +49,24 @@ class Router extends Trouter {
   #middlewaresBy = []
 
   /**
-   * Middleware declaration, where the base is optional
+   * Middleware declaration, where the page is optional
    * .use(one)
    * .use('/v1', one)
    * .use(one, two)
    * .use('/v2', two)
    */
-  use = (base = '/', ...fns) => {
-    if (typeof base === 'function' || typeof base === 'boolean') {
-      this.#middlewares = this.#middlewares.concat(base, fns).filter(Boolean)
-    } else if (base === '/') {
+  use = (page = '/', ...fns) => {
+    if (typeof page === 'function' || typeof page === 'boolean') {
+      this.#middlewares = this.#middlewares.concat(page, fns).filter(Boolean)
+    } else if (page === '/') {
       this.#middlewares = this.#middlewares.concat(fns).filter(Boolean)
     } else {
-      base = lead(base)
+      page = lead(page)
       fns.filter(Boolean).forEach(fn => {
-        const array = this.#middlewaresBy[base] ?? []
+        const array = this.#middlewaresBy[page] ?? []
         // eslint-disable-next-line no-sequences
-        array.length > 0 || array.push((r, _, nxt) => (mutate(base, r), nxt()))
-        this.#middlewaresBy[base] = array.concat(fn)
+        array.length > 0 || array.push((r, _, nxt) => (mutate(page, r), nxt()))
+        this.#middlewaresBy[page] = array.concat(fn)
       })
     }
     return this
@@ -77,9 +77,9 @@ class Router extends Trouter {
     let fns = []
     let middlewares = this.#middlewares
     const route = this.find(req.method, info.pathname)
-    const base = value((req.path = info.pathname))
-    if (this.#middlewaresBy[base] !== undefined) {
-      middlewares = middlewares.concat(this.#middlewaresBy[base])
+    const page = value((req.path = info.pathname))
+    if (this.#middlewaresBy[page] !== undefined) {
+      middlewares = middlewares.concat(this.#middlewaresBy[page])
     }
     if (route) {
       fns = route.handlers
