@@ -1,7 +1,8 @@
 'use strict'
 
+const { default: listen } = require('async-listen')
 const { createServer } = require('http')
-const { once } = require('events')
+const { promisify } = require('util')
 const test = require('ava')
 
 const got = require('got').extend({
@@ -20,15 +21,14 @@ const final = (err, req, res) => {
   res.end(err ? err.message : 'Not Found')
 }
 
-const listen = async (server, ...args) => {
-  server.listen(...args)
-  await once(server, 'listening')
+const closeServer = server => promisify(server.close)
 
-  const { address, port, family } = server.address()
-  return `http://${family === 'IPv6' ? `[${address}]` : address}:${port}/`
+const runServer = async (t, handler) => {
+  const server = createServer(handler)
+  const url = await listen(server, { host: '127.0.0.1', port: 0 })
+  t.teardown(() => closeServer(server))
+  return url
 }
-
-const close = server => new Promise(resolve => server.close(resolve))
 
 test('final handler is required', async t => {
   t.plan(1)
@@ -51,15 +51,9 @@ test('define req.params', async t => {
     res.end(`Hello, ${req.params.name}`)
   )
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(
-    await got(new URL('/greetings/kiko', serverUrl).toString()),
-    'Hello, kiko'
-  )
+  t.is(await got(new URL('/greetings/kiko', url).toString()), 'Hello, kiko')
 })
 
 test('respect req.params', async t => {
@@ -70,16 +64,13 @@ test('respect req.params', async t => {
     res.end(JSON.stringify(req.params))
   })
 
-  const server = createServer((req, res) => {
+  const url = await runServer(t, (req, res) => {
     req.params = { fizz: 'buzz' }
     router(req, res)
   })
-  const serverUrl = await listen(server)
-
-  t.teardown(() => close(server))
 
   t.deepEqual(
-    await got(new URL('/greetings/kiko', serverUrl).toString(), {
+    await got(new URL('/greetings/kiko', url).toString(), {
       responseType: 'json'
     }),
     { name: 'kiko', fizz: 'buzz' }
@@ -94,16 +85,13 @@ test('respect req.query', async t => {
     res.end(JSON.stringify(req.query))
   })
 
-  const server = createServer((req, res) => {
+  const url = await runServer(t, (req, res) => {
     req.query = { foo: 'bar' }
     router(req, res)
   })
-  const serverUrl = await listen(server)
-
-  t.teardown(() => close(server))
 
   t.deepEqual(
-    await got(new URL('/?foo=barz', serverUrl).toString(), {
+    await got(new URL('/?foo=barz', url).toString(), {
       responseType: 'json'
     }),
     { foo: 'bar' }
@@ -115,18 +103,12 @@ test('respect req.search', async t => {
 
   router.get('/', (req, res) => res.end(req.search))
 
-  const server = createServer((req, res) => {
+  const url = await runServer(t, (req, res) => {
     req.query = '?foo=bar'
     router(req, res)
   })
-  const serverUrl = await listen(server)
 
-  t.teardown(() => close(server))
-
-  t.deepEqual(
-    await got(new URL('/?foo=barz', serverUrl).toString()),
-    '?foo=bar'
-  )
+  t.deepEqual(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
 })
 
 test('`.all`', async t => {
@@ -134,18 +116,15 @@ test('`.all`', async t => {
 
   router.all('/', (req, res) => res.end('foo'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(serverUrl, { method: 'get' }), 'foo')
-  t.is(await got(serverUrl, { method: 'post' }), 'foo')
-  t.is(await got(serverUrl, { method: 'put' }), 'foo')
-  t.is(await got(serverUrl, { method: 'delete' }), 'foo')
-  t.is(await got(serverUrl, { method: 'patch' }), 'foo')
-  t.is(await got(serverUrl, { method: 'trace' }), 'foo')
-  t.is(await got(serverUrl, { method: 'options' }), 'foo')
+  t.is(await got(url, { method: 'get' }), 'foo')
+  t.is(await got(url, { method: 'post' }), 'foo')
+  t.is(await got(url, { method: 'put' }), 'foo')
+  t.is(await got(url, { method: 'delete' }), 'foo')
+  t.is(await got(url, { method: 'patch' }), 'foo')
+  t.is(await got(url, { method: 'trace' }), 'foo')
+  t.is(await got(url, { method: 'options' }), 'foo')
 })
 
 test('`.get`', async t => {
@@ -155,13 +134,10 @@ test('`.get`', async t => {
     .get('/foo', (req, res) => res.end('foo'))
     .get('/bar', (req, res) => res.end('bar'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(new URL('/foo', serverUrl).toString()), 'foo')
-  t.is(await got(new URL('/bar', serverUrl).toString()), 'bar')
+  t.is(await got(new URL('/foo', url).toString()), 'foo')
+  t.is(await got(new URL('/bar', url).toString()), 'bar')
 })
 
 test('`.use` with `.get`', async t => {
@@ -174,12 +150,9 @@ test('`.use` with `.get`', async t => {
     })
     .get('/', (req, res) => res.end(req.greetings))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(serverUrl), 'hello world')
+  t.is(await got(url), 'hello world')
 })
 
 test('async `.use`', async t => {
@@ -194,12 +167,9 @@ test('async `.use`', async t => {
       })
       .get('/', (req, res) => res.end(req.greetings))
 
-    const server = createServer(router)
-    const serverUrl = await listen(server)
+    const url = await runServer(t, router)
 
-    t.teardown(() => close(server))
-
-    t.is(await got(serverUrl), 'hello world')
+    t.is(await got(url), 'hello world')
   }
   {
     const router = Router(final)
@@ -212,12 +182,9 @@ test('async `.use`', async t => {
       })
       .get('/', (req, res) => res.end(req.greetings))
 
-    const server = createServer(router)
-    const serverUrl = await listen(server)
+    const url = await runServer(t, router)
 
-    t.teardown(() => close(server))
-
-    t.is(await got(serverUrl), 'hello world')
+    t.is(await got(url), 'hello world')
   }
 })
 
@@ -236,13 +203,10 @@ test('multi `.use` with `.get`', async t => {
     .get('/', (req, res) => res.end(req.greetings || 'cheers'))
     .get('/greetings', (req, res) => res.end(req.greetings || 'cheers'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(serverUrl), 'cheers')
-  t.is(await got(new URL('/greetings', serverUrl).toString()), 'hello world 2')
+  t.is(await got(url), 'cheers')
+  t.is(await got(new URL('/greetings', url).toString()), 'hello world 2')
 })
 
 test('multi `.use`', async t => {
@@ -262,12 +226,9 @@ test('multi `.use`', async t => {
       )
       .get('/', (req, res) => res.end(req.one + ' ' + req.two))
 
-    const server = createServer(router)
-    const serverUrl = await listen(server)
+    const url = await runServer(t, router)
 
-    t.teardown(() => close(server))
-
-    t.is(await got(serverUrl), 'one two')
+    t.is(await got(url), 'one two')
   }
 
   {
@@ -287,12 +248,9 @@ test('multi `.use`', async t => {
       )
       .get('/', (req, res) => res.end(req.one + ' ' + req.two))
 
-    const server = createServer(router)
-    const serverUrl = await listen(server)
+    const url = await runServer(t, router)
 
-    t.teardown(() => close(server))
-
-    t.is(await got(serverUrl), 'one two')
+    t.is(await got(url), 'one two')
   }
 })
 
@@ -321,13 +279,10 @@ test('catch exceptions', async t => {
     })
     .get('/greetings', (req, res) => res.end('greetings!'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(serverUrl), 'oh no')
-  t.is((await got(serverUrl, { resolveBodyOnly: false })).statusCode, 500)
+  t.is(await got(url), 'oh no')
+  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
 })
 
 test('`.use` with error', async t => {
@@ -337,13 +292,10 @@ test('`.use` with error', async t => {
     .use((req, res, next) => next(new Error('oh no')))
     .get('/', (req, res) => res.end('hello world'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-
-  t.is(await got(serverUrl), 'oh no')
-  t.is((await got(serverUrl, { resolveBodyOnly: false })).statusCode, 500)
+  t.is(await got(url), 'oh no')
+  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
 })
 
 test('use a router for creating routes', async t => {
@@ -353,11 +305,9 @@ test('use a router for creating routes', async t => {
   const router = Router(final)
   router.use('v1', routes)
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
-  t.teardown(() => close(server))
+  const url = await runServer(t, router)
 
-  t.is(await got(new URL('/v1/greetings', serverUrl).toString()), 'hello world')
+  t.is(await got(new URL('/v1/greetings', url).toString()), 'hello world')
 })
 
 test('unmatched route', async t => {
@@ -376,11 +326,9 @@ test('unmatched route', async t => {
     .get('/', (req, res) => res.end('Hello'))
     .get('/user/:id', (req, res) => res.end(`User: ${req.params.id}`))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
-  t.teardown(() => close(server))
+  const url = await runServer(t, router)
 
-  t.is(await got(new URL('/users/123', serverUrl).toString()), 'Not Found')
+  t.is(await got(new URL('/users/123', url).toString()), 'Not Found')
 })
 
 test("don't interfer with request query", async t => {
@@ -404,13 +352,10 @@ test("don't interfer with request query", async t => {
     res.end(JSON.stringify(query(req)))
   })
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
-
-  t.teardown(() => close(server))
+  const url = await runServer(t, router)
 
   t.deepEqual(
-    await got(new URL('/greetings?name=kiko&foo=bar', serverUrl).toString(), {
+    await got(new URL('/greetings?name=kiko&foo=bar', url).toString(), {
       responseType: 'json'
     }),
     {
@@ -422,15 +367,14 @@ test("don't interfer with request query", async t => {
 
 test('remove falsy middlewares', async t => {
   const router = Router(final)
+
   router
     .use(false)
     .use('/', false)
     .use('/foo', false)
     .get('/foo', (req, res) => res.end('greetings'))
 
-  const server = createServer(router)
-  const serverUrl = await listen(server)
+  const url = await runServer(t, router)
 
-  t.teardown(() => close(server))
-  t.is(await got(new URL('/foo', serverUrl).toString()), 'greetings')
+  t.is(await got(new URL('/foo', url).toString()), 'greetings')
 })
