@@ -2,7 +2,7 @@
   "name": "router-http",
   "description": "Simple HTTP router compatible with Express",
   "homepage": "https://nicedoc.io/Kikobeats/router-http",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "main": "src/index.js",
   "author": {
     "email": "josefrancisco.verdu@gmail.com",
