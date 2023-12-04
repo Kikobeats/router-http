@@ -1,6 +1,6 @@
 'use strict'
 
-const Trouter = require('trouter')
+const { Trouter } = require('trouter')
 
 const requiredFinalHandler = () => {
   throw new TypeError('You should to provide a final handler')
