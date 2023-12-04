@@ -28,7 +28,7 @@
     "routes"
   ],
   "dependencies": {
-    "trouter": "~3.2.1"
+    "trouter": "~4.0.0"
   },
   "devDependencies": {
     "@commitlint/cli": "latest",
