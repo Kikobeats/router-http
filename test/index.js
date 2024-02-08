@@ -2,7 +2,6 @@
 
 const { default: listen } = require('async-listen')
 const { createServer } = require('http')
-const { promisify } = require('util')
 const test = require('ava')
 
 const got = require('got').extend({
@@ -21,7 +20,8 @@ const final = (err, req, res) => {
   res.end(err ? err.message : 'Not Found')
 }
 
-const closeServer = server => promisify(server.close)
+const closeServer = server =>
+  require('util').promisify(server.close.bind(server))()
 
 const runServer = async (t, handler) => {
   const server = createServer(handler)
