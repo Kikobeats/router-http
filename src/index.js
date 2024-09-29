@@ -100,12 +100,16 @@ class Router extends Trouter {
     const loop = () =>
       res.writableEnded ||
       (index < size &&
-        (() => {
+        (async () => {
           try {
             const mware = middlewares[index++]
-            return index === size
-              ? mware(undefined, req, res, next)
-              : mware(req, res, next)
+            const result =
+              index === size
+                ? mware(undefined, req, res, next)
+                : mware(req, res, next)
+            if (result && typeof result.then === 'function') {
+              await result
+            }
           } catch (err) {
             return this.unhandler(err, req, res, next)
           }
