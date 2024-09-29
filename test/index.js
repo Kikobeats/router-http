@@ -254,7 +254,7 @@ test('multi `.use`', async t => {
   }
 })
 
-test('catch exceptions', async t => {
+test('catch sync exceptions', async t => {
   t.plan(8)
 
   const router = Router((err, req, res) => {
@@ -275,6 +275,37 @@ test('catch exceptions', async t => {
       next()
     })
     .get('/', (req, res) => {
+      throw new Error('oh no')
+    })
+    .get('/greetings', (req, res) => res.end('greetings!'))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(url), 'oh no')
+  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
+})
+
+test('catch async exceptions', async t => {
+  t.plan(8)
+
+  const router = Router((err, req, res) => {
+    t.truthy(err)
+    t.truthy(req)
+    t.truthy(res)
+    res.statusCode = err ? 500 : 404
+    res.end(err ? err.message : 'Not Found')
+  })
+
+  router
+    .use((req, res, next) => {
+      req.one = 'one'
+      next()
+    })
+    .use((req, res, next) => {
+      req.two = 'two'
+      next()
+    })
+    .get('/', async (req, res) => {
       throw new Error('oh no')
     })
     .get('/greetings', (req, res) => res.end('greetings!'))
