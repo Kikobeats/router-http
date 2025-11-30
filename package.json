@@ -2,7 +2,7 @@
   "name": "router-http",
   "description": "Simple HTTP router compatible with Express",
   "homepage": "https://github.com/Kikobeats/router-http",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "main": "src/index.js",
   "author": {
     "email": "josefrancisco.verdu@gmail.com",
