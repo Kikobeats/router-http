@@ -108,6 +108,8 @@ router
 
 They are only will add if the condition is satisfied.
 
+Middlewares always run **before** route handlers, regardless of declaration order. This means you can declare `.use()` before or after `.get()` / `.post()` / etc., and the middleware will still execute first.
+
 ### Prefixing routes
 
 In case you need you can prefix all the routes:

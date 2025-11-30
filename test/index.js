@@ -409,3 +409,91 @@ test('remove falsy middlewares', async t => {
 
   t.is(await got(new URL('/foo', url).toString()), 'greetings')
 })
+
+test('middleware runs before routes regardless of declaration order', async t => {
+  const executionOrder = []
+
+  // Declare routes BEFORE middleware
+  const router = Router(final)
+  router
+    .get('/ping', (req, res) => {
+      executionOrder.push('route:/ping')
+      res.end('pong')
+    })
+    .get('/checkout', (req, res) => {
+      executionOrder.push('route:/checkout')
+      res.end('checkout')
+    })
+    .use((req, res, next) => {
+      executionOrder.push('middleware')
+      next()
+    })
+
+  const url = await runServer(t, router)
+
+  // Test /ping
+  executionOrder.length = 0
+  await got(new URL('/ping', url).toString())
+  t.deepEqual(
+    executionOrder,
+    ['middleware', 'route:/ping'],
+    'middleware runs before /ping even though declared after'
+  )
+
+  // Test /checkout
+  executionOrder.length = 0
+  await got(new URL('/checkout', url).toString())
+  t.deepEqual(
+    executionOrder,
+    ['middleware', 'route:/checkout'],
+    'middleware runs before /checkout even though declared after'
+  )
+})
+
+test('middleware declaration order vs route declaration order', async t => {
+  const executionOrder = []
+
+  // Compare two routers: one with .use() before .get(), one with .use() after .get()
+  const routerUseBefore = Router(final)
+  routerUseBefore
+    .use((req, res, next) => {
+      executionOrder.push('middleware-before')
+      next()
+    })
+    .get('/test', (req, res) => {
+      executionOrder.push('route-before')
+      res.end('ok')
+    })
+
+  const routerUseAfter = Router(final)
+  routerUseAfter
+    .get('/test', (req, res) => {
+      executionOrder.push('route-after')
+      res.end('ok')
+    })
+    .use((req, res, next) => {
+      executionOrder.push('middleware-after')
+      next()
+    })
+
+  const urlBefore = await runServer(t, routerUseBefore)
+  const urlAfter = await runServer(t, routerUseAfter)
+
+  // Test router with .use() declared before .get()
+  executionOrder.length = 0
+  await got(new URL('/test', urlBefore).toString())
+  t.deepEqual(
+    executionOrder,
+    ['middleware-before', 'route-before'],
+    '.use() before .get() - middleware runs first'
+  )
+
+  // Test router with .use() declared after .get()
+  executionOrder.length = 0
+  await got(new URL('/test', urlAfter).toString())
+  t.deepEqual(
+    executionOrder,
+    ['middleware-after', 'route-after'],
+    '.use() after .get() - middleware STILL runs first'
+  )
+})

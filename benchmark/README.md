@@ -14,17 +14,17 @@ All the benchmark are run using the folllwing commnad:
 wrk -t8 -c100 -d30s http://localhost:3000/user/123
 ```
 
-## express@4.18.2
+## express@4.21.2
 
 ```
 Running 30s test @ http://localhost:3000/user/123
   8 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     4.12ms  653.26us  21.71ms   89.35%
-    Req/Sec     2.93k   159.60     5.99k    84.75%
-  700421 requests in 30.06s, 102.87MB read
-Requests/sec:  23304.22
-Transfer/sec:      3.42MB
+    Latency     5.17ms    7.14ms 295.58ms   99.24%
+    Req/Sec     2.51k   204.95     4.50k    93.66%
+  600369 requests in 30.03s, 88.17MB read
+Requests/sec:  19990.18
+Transfer/sec:      2.94MB
 ```
 
 ## polka@0.5.2
@@ -33,11 +33,11 @@ Transfer/sec:      3.42MB
 Running 30s test @ http://localhost:3000/user/123
   8 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.39ms  431.36us  21.70ms   96.27%
-    Req/Sec     8.72k     1.07k   31.74k    83.31%
-  2083301 requests in 30.10s, 260.27MB read
-Requests/sec:  69203.34
-Transfer/sec:      8.65MB
+    Latency     1.50ms    2.26ms 127.41ms   99.62%
+    Req/Sec     8.52k     0.96k   34.21k    93.63%
+  2036779 requests in 30.10s, 254.46MB read
+Requests/sec:  67661.92
+Transfer/sec:      8.45MB
 ```
 
 ## router-http@1.0.0
@@ -46,11 +46,11 @@ Transfer/sec:      8.65MB
 Running 30s test @ http://localhost:3000/user/123
   8 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.33ms  690.36us  30.28ms   97.16%
-    Req/Sec     9.27k     1.09k   11.76k    89.58%
-  2214097 requests in 30.02s, 276.61MB read
-Requests/sec:  73754.53
-Transfer/sec:      9.21MB
+    Latency     1.43ms    2.05ms 120.80ms   99.70%
+    Req/Sec     8.82k     1.01k   38.59k    92.09%
+  2109270 requests in 30.10s, 263.51MB read
+Requests/sec:  70068.20
+Transfer/sec:      8.75MB
 ```
 
 
