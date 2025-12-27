@@ -6,9 +6,9 @@
 
 A middleware style router, similar to [express@router](https://github.com/pillarjs/router), plus:
 
-- Faster (x3 compared with Express).
+- Faster (~30% more requests per second than Express).
 - Maintained and well tested.
-- Smaller (1.4 kB).
+- Smaller (1.8 kB).
 
 Don't get me wrong: The original Express router is a piece of art. I used it for years and I just considered create this library after experienced a bug that never was addressed in the stable version due to the [lack of maintenance](https://github.com/pillarjs/router/pull/60).
 
