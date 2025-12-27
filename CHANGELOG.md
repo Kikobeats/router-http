@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.0.0](https://github.com/Kikobeats/router-http/compare/v1.0.13...v2.0.0) (2025-12-27)
+
+
+### Features
+
+* use a trie based implementation ([#19](https://github.com/Kikobeats/router-http/issues/19)) ([1b7d4a1](https://github.com/Kikobeats/router-http/commit/1b7d4a1d90b90401c38dd7545b50fc8e6380503e)), closes [#12](https://github.com/Kikobeats/router-http/issues/12)
+
 ### 1.0.13 (2025-12-27)
 
 ### 1.0.12 (2025-11-30)
