@@ -77,8 +77,8 @@ class Router extends Trouter {
     return this
   }
 
-  handler = (req, res, info, next) => {
-    info = info ?? parse(req)
+  handler = (req, res, next) => {
+    const info = parse(req)
     const pathname = info.pathname
     req.path = pathname
     const route = this.find(req.method, pathname)
@@ -156,6 +156,6 @@ class Router extends Trouter {
 
 module.exports = (finalhandler = requiredFinalHandler()) => {
   const router = new Router(finalhandler)
-  const handler = (req, res, next) => router.handler(req, res, undefined, next)
+  const handler = (req, res, next) => router.handler(req, res, next)
   return Object.assign(handler, router)
 }

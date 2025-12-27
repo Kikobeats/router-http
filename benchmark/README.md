@@ -55,5 +55,3 @@ Running 30s test @ http://localhost:3000/user/123
 Requests/sec: 102751.65
 Transfer/sec:     12.84MB
 ```
-
-
