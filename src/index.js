@@ -1,5 +1,6 @@
 'use strict'
 
+const NullProtoObj = require('null-prototype-object')
 const { Trouter } = require('trouter')
 
 const requiredFinalHandler = () => {
@@ -18,18 +19,18 @@ const value = x => {
 
 const parse = ({ url }) => {
   const index = url.indexOf('?', 1)
-  const obj = { pathname: url, query: null, search: null }
-  if (index !== -1) {
-    obj.search = url.substring(index)
-    obj.query = obj.search.substring(1)
-    obj.pathname = url.substring(0, index)
+  if (index === -1) return { pathname: url, query: null, search: null }
+  const search = url.substring(index)
+  return {
+    pathname: url.substring(0, index),
+    query: search.substring(1),
+    search
   }
-  return obj
 }
 
 const mutate = (str, req) => {
-  req.url = req.url.substring(str.length) ?? '/'
-  req.path = req.path.substring(str.length) ?? '/'
+  req.url = req.url.substring(str.length) || '/'
+  req.path = req.path.substring(str.length) || '/'
 }
 
 class Router extends Trouter {
@@ -46,7 +47,7 @@ class Router extends Trouter {
   /**
    * Middleware for specific routes
    */
-  #middlewaresBy = []
+  #middlewaresBy = new NullProtoObj()
 
   /**
    * Middleware declaration, where the page is optional
@@ -64,65 +65,97 @@ class Router extends Trouter {
       page = lead(page)
       fns.filter(Boolean).forEach(fn => {
         const array = this.#middlewaresBy[page] ?? []
-        // eslint-disable-next-line no-sequences
-        array.length > 0 || array.push((r, _, nxt) => (mutate(page, r), nxt()))
+        if (array.length === 0) {
+          array.push((r, _, nxt) => {
+            mutate(page, r)
+            nxt()
+          })
+        }
         this.#middlewaresBy[page] = array.concat(fn)
       })
     }
     return this
   }
 
-  handler = (req, res, info) => {
+  handler = (req, res, info, next) => {
     info = info ?? parse(req)
-    let fns = []
-    let middlewares = this.#middlewares
-    const route = this.find(req.method, info.pathname)
-    const page = value((req.path = info.pathname))
-    if (this.#middlewaresBy[page] !== undefined) {
-      middlewares = middlewares.concat(this.#middlewaresBy[page])
+    const pathname = info.pathname
+    req.path = pathname
+    const route = this.find(req.method, pathname)
+    const page = value(pathname)
+
+    const m = this.#middlewares
+    const mb = this.#middlewaresBy[page]
+    const f = route.handlers.length > 0 ? route.handlers : null
+
+    if (f) {
+      req.params = req.params
+        ? { ...req.params, ...route.params }
+        : route.params
+    } else {
+      req.params = req.params || {}
     }
-    if (route) {
-      fns = route.handlers
-      req.params = { ...req.params, ...route.params }
-    }
-    fns.push(this.unhandler)
-    req.search = req.query ?? info.search
-    req.query = req.query ?? info.query
-    // Exit if only a single function
+
+    req.search = req.query || info.search
+    req.query = req.query || info.query
+
     let index = 0
-    let size = middlewares.length
-    const num = fns.length
-    if (size === index && num === 1) return fns[0](undefined, req, res)
+    let sync = 0
 
-    // Otherwise loop thru all middlware
-    const next = err => (err ? this.unhandler(err, req, res, next) : loop())
+    const mLen = m.length
+    const mbLen = mb ? mb.length : 0
+    const fLen = f ? f.length : 0
+    const total = mLen + mbLen + fLen
 
-    const loop = () =>
-      res.writableEnded ||
-      (index < size &&
-        (async () => {
-          try {
-            const mware = middlewares[index++]
-            const result =
-              index === size
-                ? mware(undefined, req, res, next)
-                : mware(req, res, next)
-            if (result && typeof result.then === 'function') {
-              await result
-            }
-          } catch (err) {
-            return this.unhandler(err, req, res, next)
+    const _next = err => {
+      if (err === 'router') {
+        if (next) return next()
+        index = total
+        err = undefined
+      }
+      if (err) return this.unhandler(err, req, res, next)
+      if (++sync > 100) {
+        sync = 0
+        return setImmediate(loop)
+      }
+      loop()
+    }
+
+    const loop = () => {
+      if (index < total) {
+        if (res.writableEnded) return
+        const i = index++
+        const mware =
+          i < mLen
+            ? m[i]
+            : i < mLen + mbLen
+              ? mb[i - mLen]
+              : f[i - mLen - mbLen]
+
+        try {
+          const result = mware(req, res, _next)
+          if (result && typeof result.then === 'function') {
+            return result.then(undefined, _next)
           }
-        })())
+        } catch (err) {
+          return _next(err)
+        }
+        return
+      }
 
-    middlewares = middlewares.concat(fns)
-    size += num
-    loop() // init
+      if (res.writableEnded) return
+
+      if (next) return next()
+
+      this.unhandler(undefined, req, res, _next)
+    }
+
+    loop()
   }
 }
 
 module.exports = (finalhandler = requiredFinalHandler()) => {
   const router = new Router(finalhandler)
-  const handler = (req, res) => router.handler(req, res)
+  const handler = (req, res, next) => router.handler(req, res, undefined, next)
   return Object.assign(handler, router)
 }
