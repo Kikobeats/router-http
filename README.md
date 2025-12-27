@@ -110,20 +110,68 @@ They are only will add if the condition is satisfied.
 
 Middlewares always run **before** route handlers, regardless of declaration order. This means you can declare `.use()` before or after `.get()` / `.post()` / etc., and the middleware will still execute first.
 
-### Prefixing routes
+### Nested routers
 
-In case you need you can prefix all the routes:
+You can use a router as a middleware for another router. This is useful for prefixing routes or for modularizing your application.
+
+When a sub-router is used as a middleware, it will only handle requests that match its prefix. If no route matches inside the sub-router, it will automatically call `next()` to pass control back to the parent router.
 
 ```js
-routes.get('/', (req, res) => res.end('Welcome to my API!'))
+const createRouter = require('router-http')
+const http = require('http')
 
-/**
- * Prefix all routes with the API version
- */
+const final = (err, req, res) => {
+  res.statusCode = err ? 500 : 404
+  res.end(err ? err.message : 'Not Found')
+}
+
+// 1. Create a sub-router for API v1
+const v1 = createRouter(final)
+v1.get('/info', (req, res) => res.end('v1 info'))
+
+// 2. Create another sub-router for API v2
+const v2 = createRouter(final)
+v2.get('/info', (req, res) => res.end('v2 info'))
+
+// 3. Create the main router and mount sub-routers
 const router = createRouter(final)
+
 router
-  .use('/latest', routes)
-  .use('/v1', routes)
+  .use('/v1', v1)
+  .use('/v2', v2)
+  .get('/', (req, res) => res.end('Welcome to the main router'))
+
+http.createServer(router).listen(3000)
+```
+
+#### Exit Current Router
+
+You can use `next('router')` to skip all remaining handlers in the current router and pass control back to the parent router. This is useful for conditional routing, such as a "Beta" router that only handles requests for certain users:
+
+```js
+const beta = createRouter(final)
+
+// Middleware to check if the user is a beta tester
+beta.use((req, res, next) => {
+  if (!req.isBetaTester) return next('router')
+  next()
+})
+
+beta.get('/search', (req, res) => {
+  res.end('Using the new AI-powered search engine!')
+})
+
+const router = createRouter(final)
+
+// Mount the beta router
+router.use('/v1', beta)
+
+// This will be reached if:
+// 1. The user is NOT a beta tester (next('router') was called)
+// 2. Or the path didn't match anything inside the beta router
+router.get('/v1/search', (req, res) => {
+  res.end('Using the classic search engine.')
+})
 ```
 
 ### Using the router
@@ -149,17 +197,17 @@ Requests/sec:  23304.22
 Transfer/sec:      3.42MB
 ```
 
-**router-http@1.0.0**
+**router-http@1.0.12**
 
 ```
 Running 30s test @ http://localhost:3000/user/123
   8 threads and 100 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.33ms  690.36us  30.28ms   97.16%
-    Req/Sec     9.27k     1.09k   11.76k    89.58%
-  2214097 requests in 30.02s, 276.61MB read
-Requests/sec:  73754.53
-Transfer/sec:      9.21MB
+    Latency     1.12ms    2.19ms  86.47ms   99.55%
+    Req/Sec    11.94k   756.06    13.04k    94.31%
+  959711 requests in 10.10s, 119.90MB read
+Requests/sec:  95014.35
+Transfer/sec:     11.87MB
 ```
 
 See more details, check [benchmark](/benchmark) section.
