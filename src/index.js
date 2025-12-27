@@ -3,7 +3,7 @@
 const NullProtoObj = require('null-prototype-object')
 const FindMyWay = require('find-my-way')
 
-const METHODS = [
+const HTTP_METHODS = [
   'get',
   'post',
   'put',
@@ -15,179 +15,226 @@ const METHODS = [
   'connect'
 ]
 
+const SLASH_CHAR_CODE = 47
+const SYNC_ITERATION_LIMIT = 100
+
 const requiredFinalHandler = () => {
   throw new TypeError('You should to provide a final handler')
 }
 
-const lead = route => (route.charCodeAt(0) === 47 ? route : `/${route}`)
+const ensureLeadingSlash = route =>
+  route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
-const value = x => {
-  const y = x.indexOf('/', 1)
-  return y > 1 ? x.substring(0, y) : x
+const getFirstPathSegment = pathname => {
+  const secondSlashIndex = pathname.indexOf('/', 1)
+  return secondSlashIndex > 1
+    ? pathname.substring(0, secondSlashIndex)
+    : pathname
 }
 
-const parse = ({ url }) => {
-  const index = url.indexOf('?', 1)
-  if (index === -1) return { pathname: url, query: null, search: null }
-  const search = url.substring(index)
+const parseUrl = ({ url }) => {
+  const queryIndex = url.indexOf('?', 1)
+  if (queryIndex === -1) {
+    return { pathname: url, query: null, search: null }
+  }
+  const search = url.substring(queryIndex)
   return {
-    pathname: url.substring(0, index),
+    pathname: url.substring(0, queryIndex),
     query: search.substring(1),
     search
   }
 }
 
-const mutate = (str, req) => {
-  req.url = req.url.substring(str.length) || '/'
-  req.path = req.path.substring(str.length) || '/'
+const mutateRequestUrl = (prefix, req) => {
+  req.url = req.url.substring(prefix.length) || '/'
+  req.path = req.path.substring(prefix.length) || '/'
 }
 
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
-  const _router = FindMyWay({
+  const router = FindMyWay({
     ...options,
     defaultRoute: (req, res) => finalhandler(undefined, req, res)
   })
 
-  const middlewares = []
-  const middlewaresBy = new NullProtoObj()
+  const globalMiddlewares = []
+  const middlewaresByPath = new NullProtoObj()
 
-  const find = (method, path, constraints) => {
-    const result = _router.find(method, path, constraints)
-    if (!result) return { params: {}, handlers: [] }
-    return {
-      params: result.params,
-      handlers: result.handler.handlers
+  const findRoute = (method, path, constraints) => {
+    const result = router.find(method, path, constraints)
+    if (result === null) {
+      return { params: {}, handlers: [] }
     }
+    return { params: result.params, handlers: result.handler.handlers }
   }
 
-  const _add = (m, path, handlers) => {
-    const fn = () => {}
-    fn.handlers = handlers
-    _router.on(m, path, fn)
+  const registerRoute = (method, path, handlers) => {
+    const routeHandler = () => {}
+    routeHandler.handlers = handlers
+    router.on(method, path, routeHandler)
   }
 
-  const add = (method, path, ...handlers) => {
-    const fns = [].concat(...handlers).filter(Boolean)
-    if (fns.length === 0) return handler
+  const addRoute = (method, path, ...handlers) => {
+    const flatHandlers = handlers.flat().filter(Boolean)
+    if (flatHandlers.length === 0) return handler
 
-    const list = method === '' ? METHODS : [method]
+    const methods = method === '' ? HTTP_METHODS : [method]
 
-    list.forEach(m => {
-      _add(m.toUpperCase(), path, fns)
-    })
+    for (let i = 0; i < methods.length; i++) {
+      registerRoute(methods[i].toUpperCase(), path, flatHandlers)
+    }
 
     return handler
   }
 
-  const handler = (req, res, next) => {
-    const info = parse(req)
-    const pathname = info.pathname
-    req.path = pathname
-    const page = value(pathname)
+  const selectMiddleware = (
+    index,
+    globalLen,
+    pathLen,
+    globalMw,
+    pathMw,
+    routeHandlers
+  ) => {
+    if (index < globalLen) return globalMw[index]
+    if (index < globalLen + pathLen) return pathMw[index - globalLen]
+    return routeHandlers[index - globalLen - pathLen]
+  }
 
-    let route = find(req.method, pathname)
+  const handler = (req, res, next) => {
+    const urlInfo = parseUrl(req)
+    const pathname = urlInfo.pathname
+    req.path = pathname
+
+    const pathSegment = getFirstPathSegment(pathname)
+
+    let route = findRoute(req.method, pathname)
 
     if (route.handlers.length === 0 && req.method === 'HEAD') {
-      route = find('GET', pathname)
+      route = findRoute('GET', pathname)
     }
 
-    const m = middlewares
-    const mb = middlewaresBy[page]
-    const f = route.handlers.length > 0 ? route.handlers : null
+    const globalMw = globalMiddlewares
+    const pathMw = middlewaresByPath[pathSegment]
+    const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
-    if (f) {
-      req.params = req.params
-        ? { ...req.params, ...route.params }
-        : route.params
+    if (routeHandlers !== null) {
+      req.params =
+        req.params !== undefined
+          ? { ...req.params, ...route.params }
+          : route.params
     } else {
       req.params = req.params || {}
     }
 
-    req.search = req.query || info.search
-    req.query = req.query || info.query
+    req.search = req.query || urlInfo.search
+    req.query = req.query || urlInfo.query
 
     let index = 0
-    let sync = 0
+    let syncCount = 0
 
-    const mLen = m.length
-    const mbLen = mb ? mb.length : 0
-    const fLen = f ? f.length : 0
-    const total = mLen + mbLen + fLen
+    const globalLen = globalMw.length
+    const pathLen = pathMw !== undefined ? pathMw.length : 0
+    const routeLen = routeHandlers !== null ? routeHandlers.length : 0
+    const totalMiddlewares = globalLen + pathLen + routeLen
 
-    const _next = err => {
+    const handleNext = err => {
       if (err === 'router') {
-        if (next) return next()
-        index = total
+        if (next !== undefined) return next()
+        index = totalMiddlewares
         err = undefined
       }
-      if (err) return finalhandler(err, req, res, next)
-      if (++sync > 100) {
-        sync = 0
-        return setImmediate(loop)
+      if (err !== undefined) return finalhandler(err, req, res, next)
+      if (++syncCount > SYNC_ITERATION_LIMIT) {
+        syncCount = 0
+        return setImmediate(executeLoop)
       }
-      loop()
+      executeLoop()
     }
 
-    const loop = () => {
-      if (index < total) {
+    const executeLoop = () => {
+      if (index < totalMiddlewares) {
         if (res.writableEnded) return
-        const i = index++
-        const mware =
-          i < mLen
-            ? m[i]
-            : i < mLen + mbLen
-              ? mb[i - mLen]
-              : f[i - mLen - mbLen]
+
+        const currentIndex = index++
+        const middleware = selectMiddleware(
+          currentIndex,
+          globalLen,
+          pathLen,
+          globalMw,
+          pathMw,
+          routeHandlers
+        )
 
         try {
-          const result = mware(req, res, _next)
-          if (result && typeof result.then === 'function') {
-            return result.then(undefined, _next)
+          const result = middleware(req, res, handleNext)
+          if (
+            result !== null &&
+            result !== undefined &&
+            typeof result.then === 'function'
+          ) {
+            result.then(undefined, handleNext)
           }
         } catch (err) {
-          return _next(err)
+          handleNext(err)
         }
         return
       }
 
       if (res.writableEnded) return
-      if (next) return next()
-      finalhandler(undefined, req, res, _next)
+      if (next !== undefined) return next()
+      finalhandler(undefined, req, res, handleNext)
     }
 
-    loop()
+    executeLoop()
   }
 
-  handler.use = (page = '/', ...fns) => {
-    if (typeof page === 'function' || typeof page === 'boolean') {
-      middlewares.push(...[page, ...fns].filter(Boolean))
-    } else if (page === '/') {
-      middlewares.push(...fns.filter(Boolean))
+  handler.use = (path = '/', ...fns) => {
+    if (typeof path === 'function' || typeof path === 'boolean') {
+      const middlewares = [path, ...fns].filter(Boolean)
+      for (let i = 0; i < middlewares.length; i++) {
+        globalMiddlewares.push(middlewares[i])
+      }
+    } else if (path === '/') {
+      const middlewares = fns.filter(Boolean)
+      for (let i = 0; i < middlewares.length; i++) {
+        globalMiddlewares.push(middlewares[i])
+      }
     } else {
-      page = lead(page)
-      const list = fns.filter(Boolean)
-      if (list.length > 0) {
-        const array = middlewaresBy[page] ?? []
-        if (array.length === 0) {
-          array.push((r, _, nxt) => {
-            mutate(page, r)
-            nxt()
+      const normalizedPath = ensureLeadingSlash(path)
+      const middlewares = fns.filter(Boolean)
+
+      if (middlewares.length > 0) {
+        let pathMiddlewares = middlewaresByPath[normalizedPath]
+
+        if (pathMiddlewares === undefined) {
+          pathMiddlewares = []
+          pathMiddlewares.push((req, _, next) => {
+            mutateRequestUrl(normalizedPath, req)
+            next()
           })
+          middlewaresByPath[normalizedPath] = pathMiddlewares
         }
-        array.push(...list)
-        middlewaresBy[page] = array
+
+        for (let i = 0; i < middlewares.length; i++) {
+          pathMiddlewares.push(middlewares[i])
+        }
       }
     }
     return handler
   }
 
-  handler.all = add.bind(null, '')
-  METHODS.forEach(m => (handler[m] = add.bind(null, m)))
+  handler.all = addRoute.bind(null, '')
+
+  for (let i = 0; i < HTTP_METHODS.length; i++) {
+    const method = HTTP_METHODS[i]
+    handler[method] = addRoute.bind(null, method)
+  }
+
   handler.del = handler.delete
 
-  handler.prettyPrint = (...args) => _router.prettyPrint(...args)
+  handler.prettyPrint = (...args) => router.prettyPrint(...args)
+
   Object.defineProperty(handler, 'routes', {
-    get: () => _router.routes,
+    get: () => router.routes,
     enumerable: true
   })
 
