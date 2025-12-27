@@ -5,170 +5,199 @@
 [![NPM Status](https://img.shields.io/npm/dm/router-http.svg?style=flat-square)](https://www.npmjs.org/package/router-http)
 
 - [router-http](#router-http)
-  - [Install](#install)
-  - [Usage](#usage)
-    - [Options](#options)
+  - [Why not Express router?](#why-not-express-router)
+  - [Installation](#installation)
+  - [Getting Started](#getting-started)
     - [Declaring routes](#declaring-routes)
     - [Declaring middlewares](#declaring-middlewares)
+    - [Starting the server](#starting-the-server)
+  - [Advanced](#advanced)
+    - [Request object](#request-object)
+    - [Print routes](#print-routes)
     - [Nested routers](#nested-routers)
-      - [Exit Current Router](#exit-current-router)
-    - [Using the router](#using-the-router)
-    - [Request Object](#request-object)
+    - [Skipping to parent router](#skipping-to-parent-router)
   - [Benchmark](#benchmark)
   - [Related](#related)
   - [License](#license)
 
-A middleware style router, similar to [express@router](https://github.com/pillarjs/router), plus:
 
-- **Predictable Performance**: Unlike the Express router, which is based on regex patterns, `router-http` is backed by [find-my-way](https://github.com/delvedor/find-my-way), a Trie-based router. This means lookup time remains constant regardless of the number of routes.
-- **Maintained and well tested**: Built for reliability and long-term maintenance.
-- **Small footprint**: Extremely lightweight (1.8 kB).
+A middleware-style router similar to [express router](https://github.com/pillarjs/router), with key advantages:
 
-The Express router implementation is based on regex detection that degrades linearly with the number of routes because it has to test multiple regex patterns:
+- **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a trie-based router with constant O(1) lookup time.
+- **Battle-tested** – Well maintained with comprehensive test coverage.
+- **Lightweight** – Only 1.3 kB (minifized + gzipped)
 
-| Number of Routes | `trouter` (ops/sec) | `find-my-way` (ops/sec) | Winner |
-| :--- | :--- | :--- | :--- |
-| **5 routes** | ~10.7M | **~13.7M** | **find-my-way** |
-| **10 routes** | ~6.5M | **~13.7M** | **find-my-way** |
-| **50 routes** | ~1.5M | **~11.5M** | **find-my-way** |
-| **1000 routes** | ~41k | **~10.6M** | **find-my-way** |
+## Why not Express router?
 
-In contrast, router-http is backed by a trie-based implementation that maintains nearly constant performance regardless of the number of routes.
+Express uses regex-based route matching that degrades linearly as routes increase:
 
-## Install
+| Routes | `express@router` | `router-http` |
+|--------|-----------|---------------|
+| 5      | ~10.7M ops/sec | **~13.7M ops/sec** |
+| 10     | ~6.5M ops/sec | **~13.7M ops/sec** |
+| 50     | ~1.5M ops/sec | **~11.5M ops/sec** |
+| 1000   | ~41K ops/sec | **~10.6M ops/sec** |
+
+In contrast, **router-http** is backed by a trie-based implementation that maintains nearly constant performance regardless of the number of routes.
+
+## Installation
 
 ```bash
-$ npm install router-http --save
+npm install router-http
 ```
 
-## Usage
+## Getting Started
 
-First, you should to create a router:
+First, define a handler for errors and unmatched routes:
 
 ```js
 const createRouter = require('router-http')
 
-const router = createRouter((error, req, res) => {
-  const hasError = error !== undefined
-  res.statusCode = hasError ? error.statusCode ?? 500 : 404
-  res.end(hasError ? error.message ?? 'Internal Server Error' : 'Not Found')
-})
+const finalHandler = (error, req, res) => {
+  if (error) {
+    res.statusCode = 500
+    res.end(error.message)
+  } else {
+    res.statusCode = 404
+    res.end('Not Found')
+  }
+}
+
+const router = createRouter(finalHandler)
 ```
 
-The router requires a final handler that will be called if an error occurred or none of the routes match.
-
-### Options
-
-You can pass a second argument to the router constructor to customize the underlying [find-my-way](https://github.com/delvedor/find-my-way) instance:
+You can also pass [find-my-way options](https://github.com/delvedor/find-my-way#options) as a second argument:
 
 ```js
-const router = createRouter(final, {
+const router = createRouter(finalHandler, {
   caseSensitive: false,
   ignoreTrailingSlash: true
 })
 ```
 
-See all the available options in the [find-my-way](https://github.com/delvedor/find-my-way#options) documentation.
-
 ### Declaring routes
 
-The routes are declared using HTTP verbs:
+Use HTTP verb methods to define your routes:
 
 ```js
-/**
- * Declaring multiple routes based on the HTTP verb.
- */
 router
-  .get('/', (req, res) => {
-    res.statusCode = 204
-    res.end()
-  })
-  .post('/ping', (req, res) => res.end('pong'))
-  .get('/greetings/:name', (req, res) => {
-    const { name } = req.params
-    res.end(`Hello, ${name}!`)
-  })
+  .get('/', (req, res) => res.end('Hello World'))
+  .post('/users', (req, res) => res.end('User created'))
+  .put('/users/:id', (req, res) => res.end('User updated'))
+  .delete('/users/:id', (req, res) => res.end('User deleted'))
 ```
 
-Alternatively, you can call `.all` for associate a route for all the verbs:
+Use `.all()` to match any HTTP method:
 
 ```js
-/**
- * Declaring a route to match all the HTTP verbs.
- */
 router.all('/ping', (req, res) => res.end('pong'))
 ```
 
-You can also pass handlers as arrays, which is useful for reusing middleware chains:
+The dynamic segments will be captured using the `:param` syntax, with parameters accessible via `req.params`:
 
 ```js
-const authMiddleware = (req, res, next) => {
-  // authentication logic
-  next()
-}
+router.get('/users/:id', (req, res) => {
+  res.end(`User ID: ${req.params.id}`)
+})
 
-const logMiddleware = (req, res, next) => {
-  console.log(`${req.method} ${req.path}`)
-  next()
-}
-
-const commonMiddlewares = [authMiddleware, logMiddleware]
-
-router.get('/protected', commonMiddlewares, (req, res) => {
-  res.end('Protected content')
+router.get('/posts/:year/:month', (req, res) => {
+  const { year, month } = req.params
+  res.end(`Posts from ${month}/${year}`)
 })
 ```
 
+See [Request object](#request-object) for details on how to access route parameters and other useful properties added to `req`.
+
 ### Declaring middlewares
 
-A middleware can be declared at root level:
+A middleware is declared using `.use()`. it will be added globally before running any route:
 
 ```js
-/**
- * Declaring a middleware that will be always executed.
- */
+// Global middleware (runs on every request)
 router
-  .use('/', (req, res, next) => {
+  .use((req, res, next) => {
     req.timestamp = Date.now()
     next()
-  })
+})
 ```
 
-or for specific routes:
+You can also declare middleware specific to routes:
 
 ```js
-/**
- * Declaring a middleware to execute for a certain route path.
- */
+const auth = (req, res, next) => { /* verify token */ next() }
+const log = (req, res, next) => { /* log request */ next() }
+
+const protected = [auth, log]
+
 router
-  .use('/greetings', (req, res, next) => {
-    req.greetings = 'Greetings'
-    next()
-  })
-  .get('/greetings/:username', (req, res) => {
-    res.end(`${req.greetings}, ${req.params.username}`)
-  })
+  .get('/admin', protected, (req, res) => res.end('Admin panel'))
+  .get('/settings', protected, (req, res) => res.end('Settings'))
 ```
 
-Also, you can declare conditional middlewares:
+If you want to add a middleware conditionally, just return a falsy value:
 
 ```js
-/**
- * Just add the middleware if it's production environment
- */
 router
-  .use(process.env.NODE_ENV === 'production' && authentication())
+  .use(process.env.NODE_ENV === 'production' && rateLimiter())
 ```
 
-They are only will add if the condition is satisfied.
+### Starting the server
 
-Middlewares always run **before** route handlers, regardless of declaration order. This means you can declare `.use()` before or after `.get()` / `.post()` / etc., and the middleware will still execute first.
+The router is a standard request handler. Pass it to `http.createServer`:
+
+```js
+const http = require('http')
+
+console.log(router.prettyPrint())
+// └── / (GET)
+//     ├── favicon.ico (GET)
+//     └── user/
+//         └── :id (GET)
+
+http.createServer(router).listen(3000)
+```
+
+## Advanced
+
+### Request object
+
+The router adds these properties to `req`:
+
+| Property | Description |
+|----------|-------------|
+| `req.path` | URL pathname |
+| `req.params` | Route parameters object |
+| `req.query` | Raw query string (after `?`) |
+| `req.search` | Raw search string (including `?`) |
+
+> `req.query` and `req.search` are only set if not already present.
+
+### Print routes
+
+You can visualize your router's routes in a readable tree format using the `router.prettyPrint()` method. This is especially helpful for debugging or understanding your route structure at a glance.
+
+For example:
+
+```js
+const http = require('http')
+
+console.log(router.prettyPrint())
+// └── / (GET)
+//     ├── favicon.ico (GET)
+//     └── user/
+//         └── :id (GET)
+
+http.createServer(router).listen(3000)
+```
+
+The printed output shows the nested structure of your routes along with their registered HTTP methods. This works for both flat and deeply nested routers, including those mounted via `.use()`.
+
+See more in [find-my-way prettyPrint documentation](https://github.com/delvedor/find-my-way#routerprettyprint).
+
 
 ### Nested routers
 
-You can use a router as a middleware for another router. This is useful for prefixing routes or for modularizing your application.
-
-When a sub-router is used as a middleware, it will only handle requests that match its prefix. If no route matches inside the sub-router, it will automatically call `next()` to pass control back to the parent router.
+You can use a router as a middleware for another router. This is useful for prefixing routes or for modularizing your application:
 
 ```js
 const createRouter = require('router-http')
@@ -198,58 +227,29 @@ router
 http.createServer(router).listen(3000)
 ```
 
-#### Exit Current Router
+When a sub-router is used as a middleware, it will only handle requests that match its prefix. If no route matches inside the sub-router, it will automatically call `next()` to pass control back to the parent router.
 
-You can use `next('router')` to skip all remaining handlers in the current router and pass control back to the parent router. This is useful for conditional routing, such as a "Beta" router that only handles requests for certain users:
+### Skipping to parent router
+
+Use `next('router')` to exit the current router and pass control back to the parent:
 
 ```js
-const beta = createRouter(final)
+const beta = createRouter(finalHandler)
 
-// Middleware to check if the user is a beta tester
 beta.use((req, res, next) => {
   if (!req.isBetaTester) return next('router')
   next()
 })
 
-beta.get('/search', (req, res) => {
-  res.end('Using the new AI-powered search engine!')
-})
+beta.get('/feature', (req, res) => res.end('Beta feature'))
 
-const router = createRouter(final)
-
-// Mount the beta router
 router.use('/v1', beta)
-
-// This will be reached if:
-// 1. The user is NOT a beta tester (next('router') was called)
-// 2. Or the path didn't match anything inside the beta router
-router.get('/v1/search', (req, res) => {
-  res.end('Using the classic search engine.')
-})
+router.get('/v1/feature', (req, res) => res.end('Stable feature'))
 ```
-
-### Using the router
-
-After the router has been initialized, start using it as handler in your Node.js server:
-
-```js
-const server = http.createServer(router)
-```
-
-### Request Object
-
-The router enhances the `req` object with the following fields:
-
-- **`req.path`**: The pathname of the URL.
-- **`req.params`**: An object containing the parameters from the route pattern.
-- **`req.query`**: The raw query string (the part after the `?`).
-- **`req.search`**: The raw search string (including the `?`).
-
-Note that `req.query` and `req.search` will only be populated if they aren't already present on the request object.
 
 ## Benchmark
 
-With all the improvements, `router-http` is approximately 30% faster than the express router for a single route. More importantly, while Express performance degrades linearly as you add more routes (due to regex matching), `router-http` performance remains constant.
+With all the improvements, **router-http** is approximately 30% faster than the express router:
 
 **express@5.2.1**
 
@@ -277,19 +277,16 @@ Requests/sec: 102751.65
 Transfer/sec:     12.84MB
 ```
 
-See more details, check [benchmark](/benchmark) section.
+See [benchmark](/benchmark) for details.
 
 ## Related
 
-- [send-http](https://github.com/Kikobeats/send-http) – A `res.end` with data type detection.
-- [http-body](https://github.com/Kikobeats/http-body) – Parse the http.IncomingMessage body into text/json/buffer.
-- [http-compression](https://github.com/Kikobeats/http-compression) – Adding compression (gzip/brotli) for your HTTP server in Node.js.
+- [send-http](https://github.com/Kikobeats/send-http) – `res.end` with data type detection
+- [http-body](https://github.com/Kikobeats/http-body) – Parse request body to text/json/buffer
+- [http-compression](https://github.com/Kikobeats/http-compression) – Gzip/Brotli compression middleware
 
 ## License
 
-Full credits to [Luke Edwards](https://github.com/lukeed) for writing [Polka](https://github.com/lukeed/polka) and inspired this project.
+**router-http** © [Kiko Beats](https://kikobeats.com), released under the [MIT](https://github.com/Kikobeats/router-http/blob/master/LICENSE.md) License.
 
-**router-http** © [Kiko Beats](https://kikobeats.com), released under the [MIT](https://github.com/Kikobeats/router-http/blob/master/LICENSE.md) License.<br>
-Authored and maintained by [Kiko Beats](https://kikobeats.com) with help from [contributors](https://github.com/Kikobeats/router-http/contributors).
-
-> [kikobeats.com](https://kikobeats.com) · GitHub [Kiko Beats](https://github.com/Kikobeats) · X [@Kikobeats](https://x.com/Kikobeats)
+Credits to [Luke Edwards](https://github.com/lukeed) for [Polka](https://github.com/lukeed/polka) which inspired this project.
