@@ -229,8 +229,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     handler[method] = addRoute.bind(null, method)
   }
 
-  handler.del = handler.delete
-
   handler.prettyPrint = (...args) => router.prettyPrint(...args)
 
   Object.defineProperty(handler, 'routes', {
