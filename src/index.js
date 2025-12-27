@@ -1,15 +1,24 @@
 'use strict'
 
 const NullProtoObj = require('null-prototype-object')
-const { Trouter } = require('trouter')
+const FindMyWay = require('find-my-way')
+
+const METHODS = [
+  'get',
+  'post',
+  'put',
+  'patch',
+  'delete',
+  'head',
+  'options',
+  'trace',
+  'connect'
+]
 
 const requiredFinalHandler = () => {
   throw new TypeError('You should to provide a final handler')
 }
 
-/**
- * ensure input starts with '/'
- */
 const lead = route => (route.charCodeAt(0) === 47 ? route : `/${route}`)
 
 const value = x => {
@@ -33,59 +42,57 @@ const mutate = (str, req) => {
   req.path = req.path.substring(str.length) || '/'
 }
 
-class Router extends Trouter {
-  constructor (unhandler) {
-    super()
-    this.unhandler = unhandler
-  }
+module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
+  const _router = FindMyWay({
+    ...options,
+    defaultRoute: (req, res) => finalhandler(undefined, req, res)
+  })
 
-  /**
-   * Middleware per all routes
-   */
-  #middlewares = []
+  const middlewares = []
+  const middlewaresBy = new NullProtoObj()
 
-  /**
-   * Middleware for specific routes
-   */
-  #middlewaresBy = new NullProtoObj()
-
-  /**
-   * Middleware declaration, where the page is optional
-   * .use(one)
-   * .use('/v1', one)
-   * .use(one, two)
-   * .use('/v2', two)
-   */
-  use = (page = '/', ...fns) => {
-    if (typeof page === 'function' || typeof page === 'boolean') {
-      this.#middlewares = this.#middlewares.concat(page, fns).filter(Boolean)
-    } else if (page === '/') {
-      this.#middlewares = this.#middlewares.concat(fns).filter(Boolean)
-    } else {
-      page = lead(page)
-      fns.filter(Boolean).forEach(fn => {
-        const array = this.#middlewaresBy[page] ?? []
-        if (array.length === 0) {
-          array.push((r, _, nxt) => {
-            mutate(page, r)
-            nxt()
-          })
-        }
-        this.#middlewaresBy[page] = array.concat(fn)
-      })
+  const find = (method, path, constraints) => {
+    const result = _router.find(method, path, constraints)
+    if (!result) return { params: {}, handlers: [] }
+    return {
+      params: result.params,
+      handlers: result.handler.handlers
     }
-    return this
   }
 
-  handler = (req, res, next) => {
+  const _add = (m, path, handlers) => {
+    const fn = () => {}
+    fn.handlers = handlers
+    _router.on(m, path, fn)
+  }
+
+  const add = (method, path, ...handlers) => {
+    const fns = [].concat(...handlers).filter(Boolean)
+    if (fns.length === 0) return handler
+
+    const list = method === '' ? METHODS : [method]
+
+    list.forEach(m => {
+      _add(m.toUpperCase(), path, fns)
+    })
+
+    return handler
+  }
+
+  const handler = (req, res, next) => {
     const info = parse(req)
     const pathname = info.pathname
     req.path = pathname
-    const route = this.find(req.method, pathname)
     const page = value(pathname)
 
-    const m = this.#middlewares
-    const mb = this.#middlewaresBy[page]
+    let route = find(req.method, pathname)
+
+    if (route.handlers.length === 0 && req.method === 'HEAD') {
+      route = find('GET', pathname)
+    }
+
+    const m = middlewares
+    const mb = middlewaresBy[page]
     const f = route.handlers.length > 0 ? route.handlers : null
 
     if (f) {
@@ -113,7 +120,7 @@ class Router extends Trouter {
         index = total
         err = undefined
       }
-      if (err) return this.unhandler(err, req, res, next)
+      if (err) return finalhandler(err, req, res, next)
       if (++sync > 100) {
         sync = 0
         return setImmediate(loop)
@@ -144,18 +151,45 @@ class Router extends Trouter {
       }
 
       if (res.writableEnded) return
-
       if (next) return next()
-
-      this.unhandler(undefined, req, res, _next)
+      finalhandler(undefined, req, res, _next)
     }
 
     loop()
   }
-}
 
-module.exports = (finalhandler = requiredFinalHandler()) => {
-  const router = new Router(finalhandler)
-  const handler = (req, res, next) => router.handler(req, res, next)
-  return Object.assign(handler, router)
+  handler.use = (page = '/', ...fns) => {
+    if (typeof page === 'function' || typeof page === 'boolean') {
+      middlewares.push(...[page, ...fns].filter(Boolean))
+    } else if (page === '/') {
+      middlewares.push(...fns.filter(Boolean))
+    } else {
+      page = lead(page)
+      const list = fns.filter(Boolean)
+      if (list.length > 0) {
+        const array = middlewaresBy[page] ?? []
+        if (array.length === 0) {
+          array.push((r, _, nxt) => {
+            mutate(page, r)
+            nxt()
+          })
+        }
+        array.push(...list)
+        middlewaresBy[page] = array
+      }
+    }
+    return handler
+  }
+
+  handler.all = add.bind(null, '')
+  METHODS.forEach(m => (handler[m] = add.bind(null, m)))
+  handler.del = handler.delete
+
+  handler.prettyPrint = (...args) => _router.prettyPrint(...args)
+  Object.defineProperty(handler, 'routes', {
+    get: () => _router.routes,
+    enumerable: true
+  })
+
+  return handler
 }

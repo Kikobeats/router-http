@@ -29,8 +29,8 @@
     "routes"
   ],
   "dependencies": {
-    "null-prototype-object": "~1.2.5",
-    "trouter": "~4.0.0"
+    "find-my-way": "~9.3.0",
+    "null-prototype-object": "~1.2.5"
   },
   "devDependencies": {
     "@commitlint/cli": "latest",

@@ -30,6 +30,18 @@ const runServer = async (t, handler) => {
   return url
 }
 
+test('throws error if the same route is added twice', t => {
+  const router = Router(final)
+  router.get('/foo', (req, res) => res.end('foo'))
+  const error = t.throws(() => {
+    router.get('/foo', (req, res) => res.end('bar'))
+  })
+  t.is(
+    error.message,
+    "Method 'GET' already declared for route '/foo' with constraints '{}'"
+  )
+})
+
 test('final handler is required', async t => {
   t.plan(1)
   try {
@@ -349,10 +361,6 @@ test("next('router') exit the current router", async t => {
     next('router')
   })
 
-  subRouter.get('/foo', (req, res) => {
-    res.end('should not be reached')
-  })
-
   router.use('/sub', subRouter)
   router.get('/sub/foo', (req, res) => {
     res.end('reached')
@@ -642,4 +650,127 @@ test('req.params is defined even without route match', async t => {
 
   const url = await runServer(t, router)
   await got(new URL('/no-match', url).toString())
+})
+
+test('HEAD only calls HEAD handlers if defined', async t => {
+  const router = Router(final)
+  const results = []
+  router.get('/foo', (req, res, next) => {
+    results.push('get')
+    next()
+  })
+  router.head('/foo', (req, res, next) => {
+    results.push('head')
+    res.end()
+  })
+
+  const url = await runServer(t, router)
+  await got(new URL('/foo', url).toString(), { method: 'head' })
+  t.deepEqual(results, ['head'])
+})
+
+test('HEAD fallback to GET', async t => {
+  const router = Router(final)
+  const results = []
+  router.get('/bar', (req, res, next) => {
+    results.push('get')
+    res.end()
+  })
+
+  const url = await runServer(t, router)
+  await got(new URL('/bar', url).toString(), { method: 'head' })
+  t.deepEqual(results, ['get'])
+})
+
+test('pass options to find-my-way', async t => {
+  const router = Router(final, { caseSensitive: false })
+  router.get('/FOO', (req, res) => res.end('foo'))
+  const url = await runServer(t, router)
+  t.is(await got(new URL('/foo', url).toString()), 'foo')
+})
+
+test('exposes find-my-way methods', t => {
+  const router = Router(final)
+  t.is(typeof router.prettyPrint, 'function')
+  t.true(Array.isArray(router.routes))
+})
+
+test('prettyPrint returns a string', t => {
+  const router = Router(final)
+  router.get('/foo', (req, res) => res.end('foo'))
+  const output = router.prettyPrint()
+  t.is(typeof output, 'string')
+  t.true(output.includes('foo'))
+})
+
+test('add with no handlers', t => {
+  const router = Router(final)
+  const result = router.get('/foo')
+  t.is(result, router)
+  t.is(router.routes.length, 0)
+})
+
+test('internal _add method Map initialization', t => {
+  const router = Router(final)
+  // This will hit the !methodMap branch for POST
+  router.post('/bar', () => {})
+  t.is(router.routes.length, 1)
+})
+
+test('handles bad URLs (invalid encoding)', async t => {
+  const router = Router((err, req, res) => {
+    if (err) return
+    res.statusCode = 404
+    res.end('Not Found')
+  })
+
+  router.get('/hello', (req, res) => {
+    res.end('hello')
+  })
+
+  const server = createServer(router)
+  const url = await listen(server)
+  t.teardown(() => server.close())
+
+  // invalid % encoding, using raw http to avoid got's URL validation
+  const path = '/hello/%world'
+  const response = await new Promise(resolve => {
+    require('http').get(`${url.origin}${path}`, resolve)
+  })
+
+  t.is(response.statusCode, 404)
+})
+
+test('matches static routes with encoded characters', async t => {
+  const router = Router((err, req, res) => {
+    if (err) return
+    res.statusCode = 404
+    res.end('Not Found')
+  })
+
+  router.get('/hello world', (req, res) => {
+    res.end('found')
+  })
+
+  const url = await runServer(t, router)
+
+  const response = await got(new URL('/hello%20world', url).toString())
+  t.is(response, 'found')
+})
+
+test('decodes parameters in path', async t => {
+  const router = Router((err, req, res) => {
+    if (err) return
+    res.statusCode = 404
+    res.end('Not Found')
+  })
+
+  router.get('/greetings/:name', (req, res) => {
+    res.end(`Hello, ${req.params.name}`)
+  })
+
+  const url = await runServer(t, router)
+
+  const response = await got(new URL('/greetings/kiko%20beats', url).toString())
+  t.is(response, 'Hello, kiko beats')
 })

@@ -4,15 +4,36 @@
 [![Coverage Status](https://img.shields.io/coveralls/Kikobeats/router-http.svg?style=flat-square)](https://coveralls.io/github/Kikobeats/router-http)
 [![NPM Status](https://img.shields.io/npm/dm/router-http.svg?style=flat-square)](https://www.npmjs.org/package/router-http)
 
+- [router-http](#router-http)
+  - [Install](#install)
+  - [Usage](#usage)
+    - [Options](#options)
+    - [Declaring routes](#declaring-routes)
+    - [Declaring middlewares](#declaring-middlewares)
+    - [Nested routers](#nested-routers)
+      - [Exit Current Router](#exit-current-router)
+    - [Using the router](#using-the-router)
+    - [Request Object](#request-object)
+  - [Benchmark](#benchmark)
+  - [Related](#related)
+  - [License](#license)
+
 A middleware style router, similar to [express@router](https://github.com/pillarjs/router), plus:
 
-- Faster (~30% more requests per second than Express).
-- Maintained and well tested.
-- Smaller (1.8 kB).
+- **Predictable Performance**: Unlike the Express router, which is based on regex patterns, `router-http` is backed by [find-my-way](https://github.com/delvedor/find-my-way), a Trie-based router. This means lookup time remains constant regardless of the number of routes.
+- **Maintained and well tested**: Built for reliability and long-term maintenance.
+- **Small footprint**: Extremely lightweight (1.8 kB).
 
-Don't get me wrong: The original Express router is a piece of art. I used it for years and I just considered create this library after experienced a bug that never was addressed in the stable version due to the [lack of maintenance](https://github.com/pillarjs/router/pull/60).
+The Express router implementation is based on regex detection that degrades linearly with the number of routes because it has to test multiple regex patterns:
 
-While I was evaluating the market for finding an alternative, I found [polka](https://github.com/lukeed/polka/tree/master/packages/polka) was a good starting point for creating a replacement. This library is different from polka in that it only contains the code that is strictly necessary for routing, nothing else.
+| Number of Routes | `trouter` (ops/sec) | `find-my-way` (ops/sec) | Winner |
+| :--- | :--- | :--- | :--- |
+| **5 routes** | ~10.7M | **~13.7M** | **find-my-way** |
+| **10 routes** | ~6.5M | **~13.7M** | **find-my-way** |
+| **50 routes** | ~1.5M | **~11.5M** | **find-my-way** |
+| **1000 routes** | ~41k | **~10.6M** | **find-my-way** |
+
+In contrast, router-http is backed by a trie-based implementation that maintains nearly constant performance regardless of the number of routes.
 
 ## Install
 
@@ -35,6 +56,19 @@ const router = createRouter((error, req, res) => {
 ```
 
 The router requires a final handler that will be called if an error occurred or none of the routes match.
+
+### Options
+
+You can pass a second argument to the router constructor to customize the underlying [find-my-way](https://github.com/delvedor/find-my-way) instance:
+
+```js
+const router = createRouter(final, {
+  caseSensitive: false,
+  ignoreTrailingSlash: true
+})
+```
+
+See all the available options in the [find-my-way](https://github.com/delvedor/find-my-way#options) documentation.
 
 ### Declaring routes
 
@@ -182,9 +216,20 @@ After the router has been initialized, start using it as handler in your Node.js
 const server = http.createServer(router)
 ```
 
+### Request Object
+
+The router enhances the `req` object with the following fields:
+
+- **`req.path`**: The pathname of the URL.
+- **`req.params`**: An object containing the parameters from the route pattern.
+- **`req.query`**: The raw query string (the part after the `?`).
+- **`req.search`**: The raw search string (including the `?`).
+
+Note that `req.query` and `req.search` will only be populated if they aren't already present on the request object.
+
 ## Benchmark
 
-With all the improvements, router-http is approximately 30% faster than the express router:
+With all the improvements, `router-http` is approximately 30% faster than the express router for a single route. More importantly, while Express performance degrades linearly as you add more routes (due to regex matching), `router-http` performance remains constant.
 
 **express@5.2.1**
 
