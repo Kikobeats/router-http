@@ -26,4 +26,6 @@ router
   .get('/', (req, res) => res.end('Hello'))
   .get('/user/:id', (req, res) => res.end(`User: ${req.params.id}`))
 
+console.log(router.prettyPrint())
+
 http.createServer(router).listen(3000)
