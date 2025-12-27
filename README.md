@@ -99,6 +99,26 @@ Alternatively, you can call `.all` for associate a route for all the verbs:
 router.all('/ping', (req, res) => res.end('pong'))
 ```
 
+You can also pass handlers as arrays, which is useful for reusing middleware chains:
+
+```js
+const authMiddleware = (req, res, next) => {
+  // authentication logic
+  next()
+}
+
+const logMiddleware = (req, res, next) => {
+  console.log(`${req.method} ${req.path}`)
+  next()
+}
+
+const commonMiddlewares = [authMiddleware, logMiddleware]
+
+router.get('/protected', commonMiddlewares, (req, res) => {
+  res.end('Protected content')
+})
+```
+
 ### Declaring middlewares
 
 A middleware can be declared at root level:

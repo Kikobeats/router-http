@@ -74,13 +74,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   const addRoute = (method, path, ...handlers) => {
-    const flatHandlers = handlers.flat().filter(Boolean)
-    if (flatHandlers.length === 0) return handler
+    const fns = handlers.flat().filter(Boolean)
+    if (fns.length === 0) return handler
 
     const methods = method === '' ? HTTP_METHODS : [method]
 
     for (let i = 0; i < methods.length; i++) {
-      registerRoute(methods[i].toUpperCase(), path, flatHandlers)
+      registerRoute(methods[i].toUpperCase(), path, fns)
     }
 
     return handler

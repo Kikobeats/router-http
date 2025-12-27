@@ -710,6 +710,33 @@ test('add with no handlers', t => {
   t.is(router.routes.length, 0)
 })
 
+test('handlers can be passed as an array', async t => {
+  const router = Router(final)
+  const executionOrder = []
+
+  const middleware1 = (req, res, next) => {
+    executionOrder.push('middleware1')
+    next()
+  }
+
+  const middleware2 = (req, res, next) => {
+    executionOrder.push('middleware2')
+    next()
+  }
+
+  const finalHandler = (req, res) => {
+    executionOrder.push('final')
+    res.end('done')
+  }
+
+  router.get('/foo', [middleware1, middleware2], finalHandler)
+
+  const url = await runServer(t, router)
+  await got(new URL('/foo', url).toString())
+
+  t.deepEqual(executionOrder, ['middleware1', 'middleware2', 'final'])
+})
+
 test('internal _add method Map initialization', t => {
   const router = Router(final)
   // This will hit the !methodMap branch for POST
