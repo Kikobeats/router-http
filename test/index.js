@@ -341,6 +341,138 @@ test('use a router for creating routes', async t => {
   t.is(await got(new URL('/v1/greetings', url).toString()), 'hello world')
 })
 
+test("next('router') exit the current router", async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  subRouter.get('/foo', (req, res, next) => {
+    next('router')
+  })
+
+  subRouter.get('/foo', (req, res) => {
+    res.end('should not be reached')
+  })
+
+  router.use('/sub', subRouter)
+  router.get('/sub/foo', (req, res) => {
+    res.end('reached')
+  })
+
+  const url = await runServer(t, router)
+  t.is(await got(new URL('/sub/foo', url).toString()), 'reached')
+})
+
+test('nested router with params', async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  subRouter.get('/:id', (req, res) => {
+    res.end(`id: ${req.params.id}, version: ${req.params.version}`)
+  })
+
+  router.use('/v1', (req, res, next) => {
+    req.params.version = 'v1'
+    next()
+  })
+  router.use('/v1', subRouter)
+
+  const url = await runServer(t, router)
+  t.is(await got(new URL('/v1/123', url).toString()), 'id: 123, version: v1')
+})
+
+test('nested router should call parent next if no match', async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  // subRouter has no matching routes for /foo
+  subRouter.get('/bar', (req, res) => res.end('bar'))
+
+  router.use('/sub', subRouter)
+  router.get('/sub/foo', (req, res) => {
+    res.end('reached')
+  })
+
+  const url = await runServer(t, router)
+  t.is(await got(new URL('/sub/foo', url).toString()), 'reached')
+})
+
+test("next('router') at top level", async t => {
+  const router = Router(final)
+  router.get('/foo', (req, res, next) => {
+    next('router')
+  })
+  const url = await runServer(t, router)
+  t.is(await got(new URL('/foo', url).toString()), 'Not Found')
+})
+
+test('middleware ends response and calls next', async t => {
+  const router = Router(final)
+  router.use((req, res, next) => {
+    res.end('done')
+    next()
+  })
+  router.get('/', (req, res) => {
+    res.end('should not reach')
+  })
+  const url = await runServer(t, router)
+  t.is(await got(url), 'done')
+})
+
+test('last middleware ends response', async t => {
+  const router = Router(final)
+  router.get('/', (req, res) => {
+    res.end('done')
+  })
+  const url = await runServer(t, router)
+  t.is(await got(url), 'done')
+})
+
+test('last middleware ends response and calls next', async t => {
+  const router = Router(final)
+  router.get('/', (req, res, next) => {
+    res.end('done')
+    next()
+  })
+  const url = await runServer(t, router)
+  t.is(await got(url), 'done')
+})
+
+test('many sync middlewares', async t => {
+  const router = Router(final)
+  let count = 0
+  for (let i = 0; i < 200; i++) {
+    router.use((req, res, next) => {
+      count++
+      next()
+    })
+  }
+  router.get('/', (req, res) => res.end(count.toString()))
+
+  const url = await runServer(t, router)
+  t.is(await got(url), '200')
+})
+
+test('req.params is an empty object on no-match', async t => {
+  const router = Router((_err, req, res) => {
+    t.deepEqual(req.params, {})
+    res.end('done')
+  })
+  const url = await runServer(t, router)
+  await got(new URL('/any', url).toString())
+})
+
+test('req.params is preserved on no-match if already defined', async t => {
+  const router = Router((_err, req, res) => {
+    t.deepEqual(req.params, { existing: 'value' })
+    res.end('done')
+  })
+  const url = await runServer(t, (req, res) => {
+    req.params = { existing: 'value' }
+    router(req, res)
+  })
+  await got(new URL('/any', url).toString())
+})
+
 test('unmatched route', async t => {
   const router = Router(final)
 
@@ -496,4 +628,18 @@ test('middleware declaration order vs route declaration order', async t => {
     ['middleware-after', 'route-after'],
     '.use() after .get() - middleware STILL runs first'
   )
+})
+
+test('req.params is defined even without route match', async t => {
+  const router = Router(final)
+
+  router.use((req, res, next) => {
+    t.truthy(req.params)
+    next()
+  })
+
+  router.get('/match', (req, res) => res.end('match'))
+
+  const url = await runServer(t, router)
+  await got(new URL('/no-match', url).toString())
 })
