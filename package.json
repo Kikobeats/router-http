@@ -29,7 +29,7 @@
     "routes"
   ],
   "dependencies": {
-    "find-my-way": "~9.4.0",
+    "find-my-way": "~9.5.0",
     "null-prototype-object": "~1.2.5"
   },
   "devDependencies": {
