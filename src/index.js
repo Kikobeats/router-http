@@ -45,9 +45,15 @@ const parseUrl = ({ url }) => {
   }
 }
 
+const QUESTION_MARK_CHAR_CODE = 63
+
 const mutateRequestUrl = (prefix, req) => {
-  req.url = req.url.substring(prefix.length) || '/'
-  req.path = req.path.substring(prefix.length) || '/'
+  const remainingUrl = req.url.substring(prefix.length)
+  req.url = !remainingUrl || remainingUrl.charCodeAt(0) === QUESTION_MARK_CHAR_CODE
+    ? `/${remainingUrl}`
+    : remainingUrl
+  const remainingPath = req.path.substring(prefix.length)
+  req.path = remainingPath || '/'
 }
 
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {

@@ -801,3 +801,36 @@ test('decodes parameters in path', async t => {
   const response = await got(new URL('/greetings/kiko%20beats', url).toString())
   t.is(response, 'Hello, kiko beats')
 })
+
+test('.use() sub-router matches base path with query string', async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  subRouter.get('/', (req, res) => res.end('sub-root'))
+  subRouter.get('/success', (req, res) => res.end('sub-success'))
+
+  router.use('/checkout', subRouter)
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/checkout', url).toString()),
+    'sub-root',
+    '/checkout without query string'
+  )
+  t.is(
+    await got(new URL('/checkout?token=abc123', url).toString()),
+    'sub-root',
+    '/checkout with query string should still match sub-router root'
+  )
+  t.is(
+    await got(new URL('/checkout/success', url).toString()),
+    'sub-success',
+    '/checkout/success without query string'
+  )
+  t.is(
+    await got(new URL('/checkout/success?session_id=cs_test', url).toString()),
+    'sub-success',
+    '/checkout/success with query string'
+  )
+})
