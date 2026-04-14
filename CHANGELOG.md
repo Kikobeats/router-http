@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### 2.0.6 (2026-04-14)
+
+
+### Bug Fixes
+
+* keep route on subrouter ([#25](https://github.com/Kikobeats/router-http/issues/25)) ([3e1cf3f](https://github.com/Kikobeats/router-http/commit/3e1cf3f3bbd68f3f7ba2a54f770544d185359802))
+
 ### 2.0.5 (2026-04-14)
 
 ### 2.0.4 (2026-03-17)
