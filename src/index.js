@@ -25,11 +25,23 @@ const requiredFinalHandler = () => {
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
-const getFirstPathSegment = pathname => {
-  const secondSlashIndex = pathname.indexOf('/', 1)
-  return secondSlashIndex > 1
-    ? pathname.substring(0, secondSlashIndex)
-    : pathname
+// Path middleware is stored under the full mount path (e.g. `/admin/panel`).
+// Match the longest registered mount that is an exact path or a parent prefix
+// so multi-segment `.use()` mounts are not skipped.
+const matchPathMiddleware = (pathname, middlewaresByPath) => {
+  let matchedPath
+  let matchedMw
+
+  for (const mountPath in middlewaresByPath) {
+    if (pathname === mountPath || pathname.startsWith(mountPath + '/')) {
+      if (matchedPath === undefined || mountPath.length > matchedPath.length) {
+        matchedPath = mountPath
+        matchedMw = middlewaresByPath[mountPath]
+      }
+    }
+  }
+
+  return matchedMw
 }
 
 const parseUrl = ({ url }) => {
@@ -110,8 +122,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathname = urlInfo.pathname
     req.path = pathname
 
-    const pathSegment = getFirstPathSegment(pathname)
-
     let route = findRoute(req.method, pathname)
 
     if (route.handlers.length === 0 && req.method === 'HEAD') {
@@ -119,7 +129,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
 
     const globalMw = globalMiddlewares
-    const pathMw = middlewaresByPath[pathSegment]
+    const pathMw = matchPathMiddleware(pathname, middlewaresByPath)
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
     if (routeHandlers !== null) {

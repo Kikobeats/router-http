@@ -834,3 +834,66 @@ test('.use() sub-router matches base path with query string', async t => {
     '/checkout/success with query string'
   )
 })
+
+test('multi-segment .use() mount runs path middleware', async t => {
+  const router = Router(final)
+
+  router.use('/admin/panel', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin/panel/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
+
+test('multi-segment .use() mounts a sub-router', async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  subRouter.get('/', (req, res) => res.end('api-root'))
+  subRouter.get('/info', (req, res) => res.end('api-info'))
+
+  router.use('/api/v1', subRouter)
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/api/v1', url).toString()), 'api-root')
+  t.is(await got(new URL('/api/v1/info', url).toString()), 'api-info')
+})
+
+test('longest matching .use() mount wins over a shorter prefix', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    req.mount = 'admin'
+    next()
+  })
+  router.use('/admin/panel', (req, res, next) => {
+    req.mount = 'admin-panel'
+    next()
+  })
+  router.get('/admin/settings', (req, res) => res.end(req.mount))
+  router.get('/admin/panel/secret', (req, res) => res.end(req.mount))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/settings', url).toString()), 'admin')
+  t.is(await got(new URL('/admin/panel/secret', url).toString()), 'admin-panel')
+})
