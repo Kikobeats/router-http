@@ -25,6 +25,18 @@ const requiredFinalHandler = () => {
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
+// Mount paths are looked up by the first URL segment (e.g. `/admin`).
+// Strip trailing slashes so `.use('/admin/', …)` registers under `/admin`
+// and still matches requests like `/admin/secret`.
+const normalizeMountPath = path => {
+  const withSlash = ensureLeadingSlash(path)
+  let end = withSlash.length
+  while (end > 1 && withSlash.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
+    end--
+  }
+  return end === withSlash.length ? withSlash : withSlash.substring(0, end)
+}
+
 const getFirstPathSegment = pathname => {
   const secondSlashIndex = pathname.indexOf('/', 1)
   return secondSlashIndex > 1
@@ -205,7 +217,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         globalMiddlewares.push(middlewares[i])
       }
     } else {
-      const normalizedPath = ensureLeadingSlash(path)
+      const normalizedPath = normalizeMountPath(path)
       const middlewares = fns.filter(Boolean)
 
       if (middlewares.length > 0) {

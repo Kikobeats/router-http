@@ -834,3 +834,31 @@ test('.use() sub-router matches base path with query string', async t => {
     '/checkout/success with query string'
   )
 })
+
+test('.use() trailing-slash mount still runs path middleware', async t => {
+  const router = Router(final)
+
+  router.use('/admin/', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/admin/secret', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
