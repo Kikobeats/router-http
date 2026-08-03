@@ -32,6 +32,17 @@ const getFirstPathSegment = pathname => {
     : pathname
 }
 
+// find-my-way decodes the path before matching routes. Path middleware is
+// keyed by the mount string as registered, so look up the decoded segment
+// too — otherwise `/%61dmin/secret` matches `/admin/secret` with no auth.
+const decodePathname = pathname => {
+  try {
+    return decodeURIComponent(pathname)
+  } catch {
+    return pathname
+  }
+}
+
 const parseUrl = ({ url }) => {
   const queryIndex = url.indexOf('?', 1)
   if (queryIndex === -1) {
@@ -111,6 +122,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     req.path = pathname
 
     const pathSegment = getFirstPathSegment(pathname)
+    const decodedSegment = getFirstPathSegment(decodePathname(pathname))
 
     let route = findRoute(req.method, pathname)
 
@@ -119,7 +131,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
 
     const globalMw = globalMiddlewares
-    const pathMw = middlewaresByPath[pathSegment]
+    const pathMw =
+      middlewaresByPath[pathSegment] ?? middlewaresByPath[decodedSegment]
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
     if (routeHandlers !== null) {
@@ -213,8 +226,11 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
         if (pathMiddlewares === undefined) {
           pathMiddlewares = []
+          // Strip the request's first segment (which may still be encoded),
+          // not the mount string — `/%61dmin/x` under `.use('/admin')` must
+          // leave `/x`, and `normalizedPath.length` would cut the wrong span.
           pathMiddlewares.push((req, _, next) => {
-            mutateRequestUrl(normalizedPath, req)
+            mutateRequestUrl(getFirstPathSegment(req.path), req)
             next()
           })
           middlewaresByPath[normalizedPath] = pathMiddlewares

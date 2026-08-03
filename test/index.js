@@ -834,3 +834,54 @@ test('.use() sub-router matches base path with query string', async t => {
     '/checkout/success with query string'
   )
 })
+
+// find-my-way decodes before matching routes; middleware lookup must too,
+// or a percent-encoded mount segment skips auth while the route still hits.
+test('.use() path middleware runs for a percent-encoded mount segment', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  for (const path of ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']) {
+    const denied = await got(new URL(path, url).toString(), {
+      resolveBodyOnly: false
+    })
+    t.is(denied.statusCode, 401, `${path} should be unauthorized`)
+    t.is(denied.body, 'unauthorized')
+
+    t.is(
+      await got(new URL(path, url).toString(), {
+        headers: { authorization: 'secret' }
+      }),
+      'secret data',
+      `${path} should reach the handler after auth`
+    )
+  }
+})
+
+test('.use() strips an encoded mount before a nested handler sees the path', async t => {
+  const router = Router(final)
+  const subRouter = Router(final)
+
+  subRouter.get('/secret', (req, res) => {
+    res.end(`path=${req.path}`)
+  })
+
+  router.use('/admin', subRouter)
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/%61dmin/secret', url).toString()),
+    'path=/secret'
+  )
+})
