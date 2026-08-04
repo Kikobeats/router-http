@@ -32,6 +32,42 @@ const getFirstPathSegment = pathname => {
     : pathname
 }
 
+const normalizeMountPath = path => {
+  const withSlash = ensureLeadingSlash(path)
+  let end = withSlash.length
+  while (end > 1 && withSlash.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
+    end--
+  }
+  return end === withSlash.length ? withSlash : withSlash.substring(0, end)
+}
+
+// decodeURI (not decodeURIComponent): leave %2F encoded so it cannot invent
+// path segments and desync mount match from raw segment stripping.
+const decodePathname = pathname => {
+  if (pathname.indexOf('%') === -1) return pathname
+  try {
+    return decodeURI(pathname)
+  } catch {
+    return pathname
+  }
+}
+
+// Encoded mounts differ in byte length from the registered path; take N raw segments.
+const getRawMountPrefix = (pathname, segmentCount) => {
+  let count = 0
+  let i = 1
+  while (i < pathname.length) {
+    const next = pathname.indexOf('/', i)
+    count++
+    if (count === segmentCount) {
+      return next === -1 ? pathname : pathname.substring(0, next)
+    }
+    if (next === -1) return pathname
+    i = next + 1
+  }
+  return pathname
+}
+
 const parseUrl = ({ url }) => {
   const queryIndex = url.indexOf('?', 1)
   if (queryIndex === -1) {
@@ -64,6 +100,31 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   const globalMiddlewares = []
   const middlewaresByPath = new NullProtoObj()
+  // First decoded segment → mounts under that segment, longest path first.
+  const mountsByFirstSegment = new NullProtoObj()
+  let pathMountCount = 0
+
+  const matchPathMiddleware = pathname => {
+    if (pathMountCount === 0) return undefined
+
+    const decoded = decodePathname(pathname)
+    const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
+    if (candidates === undefined) return undefined
+
+    for (let i = 0; i < candidates.length; i++) {
+      const mountPath = candidates[i].path
+      const mountLen = mountPath.length
+      if (
+        decoded === mountPath ||
+        (decoded.length > mountLen &&
+          decoded.charCodeAt(mountLen) === SLASH_CHAR_CODE &&
+          decoded.startsWith(mountPath))
+      ) {
+        return candidates[i].mw
+      }
+    }
+    return undefined
+  }
 
   const findRoute = (method, path, constraints) => {
     const result = router.find(method, path, constraints)
@@ -110,8 +171,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathname = urlInfo.pathname
     req.path = pathname
 
-    const pathSegment = getFirstPathSegment(pathname)
-
     let route = findRoute(req.method, pathname)
 
     if (route.handlers.length === 0 && req.method === 'HEAD') {
@@ -119,7 +178,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
 
     const globalMw = globalMiddlewares
-    const pathMw = middlewaresByPath[pathSegment]
+    const pathMw = matchPathMiddleware(pathname)
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
     if (routeHandlers !== null) {
@@ -205,7 +264,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         globalMiddlewares.push(middlewares[i])
       }
     } else {
-      const normalizedPath = ensureLeadingSlash(path)
+      const normalizedPath = normalizeMountPath(path)
       const middlewares = fns.filter(Boolean)
 
       if (middlewares.length > 0) {
@@ -213,11 +272,33 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
         if (pathMiddlewares === undefined) {
           pathMiddlewares = []
+          let mountSegments = 1
+          for (let i = 1; i < normalizedPath.length; i++) {
+            if (normalizedPath.charCodeAt(i) === SLASH_CHAR_CODE) mountSegments++
+          }
           pathMiddlewares.push((req, _, next) => {
-            mutateRequestUrl(normalizedPath, req)
+            const reqPath = req.path
+            mutateRequestUrl(
+              reqPath.indexOf('%') === -1
+                ? normalizedPath
+                : getRawMountPrefix(reqPath, mountSegments),
+              req
+            )
             next()
           })
           middlewaresByPath[normalizedPath] = pathMiddlewares
+          pathMountCount++
+
+          const segment = getFirstPathSegment(normalizedPath)
+          let candidates = mountsByFirstSegment[segment]
+          if (candidates === undefined) {
+            candidates = []
+            mountsByFirstSegment[segment] = candidates
+          }
+          candidates.push({ path: normalizedPath, mw: pathMiddlewares })
+          if (candidates.length > 1) {
+            candidates.sort((a, b) => b.path.length - a.path.length)
+          }
         }
 
         for (let i = 0; i < middlewares.length; i++) {
