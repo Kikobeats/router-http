@@ -2,7 +2,7 @@
 
 const { default: listen } = require('async-listen')
 const { createServer } = require('http')
-const test = require('ava')
+const test = require('ava').default
 
 const got = require('got').extend({
   retry: 0,
