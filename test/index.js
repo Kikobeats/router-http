@@ -1002,3 +1002,27 @@ test('.use() multi-segment encoded mount still runs path middleware', async t =>
     'secret data'
   )
 })
+
+test('.use() does not treat %2F as a mount separator', async t => {
+  const router = Router(final)
+  let mounted = false
+
+  router.use('/admin/panel', (req, res, next) => {
+    mounted = true
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) => res.end('panel'))
+
+  const url = await runServer(t, router)
+
+  mounted = false
+  const encoded = await got(new URL('/admin%2Fpanel/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(encoded.statusCode, 404)
+  t.false(mounted, 'encoded slash must not match /admin/panel mount')
+
+  mounted = false
+  t.is(await got(new URL('/admin/panel/secret', url).toString()), 'panel')
+  t.true(mounted)
+})

@@ -41,11 +41,12 @@ const normalizeMountPath = path => {
   return end === withSlash.length ? withSlash : withSlash.substring(0, end)
 }
 
-// Skip decodeURIComponent on the common unescaped path (no try/catch either).
+// decodeURI (not decodeURIComponent): leave %2F encoded so it cannot invent
+// path segments and desync mount match from raw segment stripping.
 const decodePathname = pathname => {
   if (pathname.indexOf('%') === -1) return pathname
   try {
-    return decodeURIComponent(pathname)
+    return decodeURI(pathname)
   } catch {
     return pathname
   }
