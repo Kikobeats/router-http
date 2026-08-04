@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### 2.0.10 (2026-08-04)
+
+
+### Bug Fixes
+
+* match .use() mounts by decoded longest prefix ([#35](https://github.com/Kikobeats/router-http/issues/35)) ([6c95dfb](https://github.com/Kikobeats/router-http/commit/6c95dfbd5ef5efda58938e1371d6f174e2cec16e))
+
 ### 2.0.9 (2026-08-03)
 
 ### 2.0.8 (2026-07-21)
