@@ -1026,3 +1026,124 @@ test('.use() does not treat %2F as a mount separator', async t => {
   t.is(await got(new URL('/admin/panel/secret', url).toString()), 'panel')
   t.true(mounted)
 })
+
+test('.use() still runs when ignoreDuplicateSlashes matches the route', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.use('/admin/panel', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin//panel/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/admin//panel/secret', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
+
+test('.use() still runs when useSemicolonDelimiter matches the route', async t => {
+  const router = Router(final, { useSemicolonDelimiter: true })
+
+  router.use('/admin', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin;sid=1', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/admin;sid=1', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
+
+test('.use() still runs when caseSensitive:false matches the route', async t => {
+  const router = Router(final, { caseSensitive: false })
+
+  router.use('/admin', (req, res, next) => {
+    if (req.headers.authorization !== 'secret') {
+      res.statusCode = 401
+      return res.end('unauthorized')
+    }
+    next()
+  })
+  router.get('/admin/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/Admin/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/Admin/secret', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
+
+test('onBadUrl handler does not crash the request', async t => {
+  const router = Router(final, {
+    onBadUrl: (path, req, res) => {
+      res.statusCode = 400
+      res.end(`bad:${path}`)
+    }
+  })
+
+  router.get('/hello/:name', (req, res) => res.end(req.params.name))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/hello/%world', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(res.statusCode, 400)
+  t.is(res.body, 'bad:/hello/%world')
+})
+
+test('onMaxParamLength handler does not crash the request', async t => {
+  const router = Router(final, {
+    maxParamLength: 3,
+    onMaxParamLength: (path, req, res) => {
+      res.statusCode = 414
+      res.end(`long:${path}`)
+    }
+  })
+
+  router.get('/hello/:name', (req, res) => res.end(req.params.name))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/hello/abcd', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(res.statusCode, 414)
+  t.is(res.body, 'long:/hello/abcd')
+})

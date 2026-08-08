@@ -98,6 +98,28 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     defaultRoute: (req, res) => finalhandler(undefined, req, res)
   })
 
+  // Mirror find-my-way lookup normalization so .use() mounts cannot be skipped
+  // after the router still matches a route (auth bypass).
+  const caseSensitive = options.caseSensitive !== false
+  const ignoreDuplicateSlashes = options.ignoreDuplicateSlashes === true
+  const useSemicolonDelimiter = options.useSemicolonDelimiter === true
+
+  const normalizeRequestPath = pathname => {
+    let path = pathname
+    let semicolonSearch = null
+    if (ignoreDuplicateSlashes) {
+      path = FindMyWay.removeDuplicateSlashes(path)
+    }
+    if (useSemicolonDelimiter) {
+      const semi = path.indexOf(';')
+      if (semi !== -1) {
+        semicolonSearch = path.substring(semi)
+        path = semi === 0 ? '/' : path.substring(0, semi)
+      }
+    }
+    return { path, semicolonSearch }
+  }
+
   const globalMiddlewares = []
   const middlewaresByPath = new NullProtoObj()
   // First decoded segment → mounts under that segment, longest path first.
@@ -107,7 +129,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const matchPathMiddleware = pathname => {
     if (pathMountCount === 0) return undefined
 
-    const decoded = decodePathname(pathname)
+    let decoded = decodePathname(pathname)
+    if (!caseSensitive) decoded = decoded.toLowerCase()
     const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
     if (candidates === undefined) return undefined
 
@@ -131,7 +154,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     if (result === null) {
       return { params: {}, handlers: [] }
     }
-    return { params: result.params, handlers: result.handler.handlers }
+    // onBadUrl / onMaxParamLength are plain find-my-way handlers without
+    // our `.handlers` wrapper; run them as a single middleware.
+    const wrapped = result.handler.handlers
+    if (wrapped === undefined) {
+      return { params: result.params, handlers: [result.handler] }
+    }
+    return { params: result.params, handlers: wrapped }
   }
 
   const registerRoute = (method, path, handlers) => {
@@ -168,8 +197,15 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   const handler = (req, res, next) => {
     const urlInfo = parseUrl(req)
-    const pathname = urlInfo.pathname
+    const { path: pathname, semicolonSearch } = normalizeRequestPath(
+      urlInfo.pathname
+    )
     req.path = pathname
+    // Keep req.url aligned with the path find-my-way matched so mount
+    // stripping cannot desync after duplicate-slash / semicolon normalization.
+    if (pathname !== urlInfo.pathname) {
+      req.url = pathname + (semicolonSearch || '') + (urlInfo.search || '')
+    }
 
     let route = findRoute(req.method, pathname)
 
@@ -264,7 +300,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         globalMiddlewares.push(middlewares[i])
       }
     } else {
-      const normalizedPath = normalizeMountPath(path)
+      let normalizedPath = normalizeMountPath(path)
+      if (!caseSensitive) normalizedPath = normalizedPath.toLowerCase()
       const middlewares = fns.filter(Boolean)
 
       if (middlewares.length > 0) {
@@ -278,8 +315,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           }
           pathMiddlewares.push((req, _, next) => {
             const reqPath = req.path
+            // Case-insensitive mounts are stored lowercased; strip by segment
+            // count so the raw request casing (and encodings) stay intact.
             mutateRequestUrl(
-              reqPath.indexOf('%') === -1
+              caseSensitive && reqPath.indexOf('%') === -1
                 ? normalizedPath
                 : getRawMountPrefix(reqPath, mountSegments),
               req
