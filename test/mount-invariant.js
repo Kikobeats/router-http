@@ -4,9 +4,13 @@ const test = require('ava').default
 
 const Router = require('..')
 
-// The invariant this file guards: if a route matches, every `.use()` mount that
-// prefixes it must have run. A mount that normalizes differently than the route
+// The invariant this file guards: however a mount is spelled, if a route under
+// it matches then that mount ran. A mount normalized differently than the route
 // silently drops its middleware, which for an auth mount is a bypass.
+//
+// Scoped to one mount per router on purpose. When several mounts prefix the
+// same path only the longest runs — see the `longest matching .use() mount`
+// test in index.js — so a multi-mount router would not satisfy this shape.
 const OPTION_SETS = [
   {},
   { ignoreDuplicateSlashes: true },
@@ -61,7 +65,7 @@ const createResponse = () => ({
   }
 })
 
-test('a matched route never skips a mount that prefixes it', t => {
+test('a matched route never skips its mount, however the mount is spelled', t => {
   const bypasses = []
   let combinations = 0
 

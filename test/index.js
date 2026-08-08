@@ -1251,7 +1251,7 @@ test('req.url is untouched when no mount matches', async t => {
   t.is(await got(new URL('/hello', url).toString()), '/hello')
 })
 
-test('req.query stops at the same delimiter as req.path', async t => {
+test('a `?` inside a fragment is not exposed as req.query', async t => {
   const router = Router(final)
 
   router.get('/api/user', (req, res) => res.end(`${req.path}|${req.query}`))
@@ -1259,7 +1259,44 @@ test('req.query stops at the same delimiter as req.path', async t => {
   const url = await runServer(t, router)
   const res = await rawRequest(url, '/api/user#?admin=true')
 
-  t.is(res.body, '/api/user|?admin=true')
+  t.is(res.body, '/api/user|null')
+})
+
+test('a query after a semicolon path parameter is still req.query', async t => {
+  const router = Router(final, { useSemicolonDelimiter: true })
+
+  router.get('/foo', (req, res) =>
+    res.end(`${req.path}|${req.query}|${req.search}`)
+  )
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/foo;sid=1?a=2', url).toString()), '/foo|a=2|?a=2')
+})
+
+test('ignoreDuplicateSlashes leaves the query string intact', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.get('/go', (req, res) => res.end(req.query))
+
+  const url = await runServer(t, router)
+  const target = `${url.origin}/go?redirect=https://example.com/b`
+
+  t.is(await got(target), 'redirect=https://example.com/b')
+})
+
+test('req.url is untouched when a global middleware diverts', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.use((req, res, next) => next('router'))
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const url = await runServer(t, (req, res) =>
+    router(req, res, () => res.end(`parent:${req.url}`))
+  )
+
+  t.is(await got(new URL('/admin//x', url).toString()), 'parent:/admin//x')
 })
 
 test('req.path mirrors ignoreTrailingSlash', async t => {

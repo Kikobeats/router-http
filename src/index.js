@@ -74,10 +74,6 @@ const getRawMountPrefix = (pathname, segmentCount) => {
   return pathname
 }
 
-const QUESTION_MARK_CHAR_CODE = 63
-const HASH_CHAR_CODE = 35
-const SEMICOLON_CHAR_CODE = 59
-
 // RFC 7230 §5.3.2 absolute-form targets; same rewrite find-my-way applies.
 const ABSOLUTE_FORM_REGEXP = /^https?:\/\/.*?\//
 
@@ -86,7 +82,14 @@ const toOriginForm = pathname =>
     ? pathname
     : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
 
+const NORMALIZED_URL = Symbol('normalizedUrl')
+
 const mutateRequestUrl = (prefix, req) => {
+  const normalizedUrl = req[NORMALIZED_URL]
+  if (normalizedUrl !== undefined) {
+    req.url = normalizedUrl
+    req[NORMALIZED_URL] = undefined
+  }
   const remainingUrl = req.url.substring(prefix.length)
   req.url =
     remainingUrl.charCodeAt(0) === SLASH_CHAR_CODE
@@ -115,41 +118,54 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   const ignoreTrailingSlash = !!options.ignoreTrailingSlash
 
-  // Same single scan find-my-way's safeDecodeURI runs: the path ends at the
-  // first of these, so query and path can never disagree on where it stops.
-  const findPathDelimiter = urlPath => {
-    for (let i = 1; i < urlPath.length; i++) {
-      const charCode = urlPath.charCodeAt(i)
-      if (
-        charCode === QUESTION_MARK_CHAR_CODE ||
-        charCode === HASH_CHAR_CODE ||
-        (charCode === SEMICOLON_CHAR_CODE && useSemicolonDelimiter)
-      ) {
-        return i
-      }
-    }
-    return -1
-  }
-
   const trimTrailingSlash = path =>
     ignoreTrailingSlash ? FindMyWay.trimLastSlash(path) : path
 
+  const normalizePath = path => {
+    const collapsed = ignoreDuplicateSlashes
+      ? FindMyWay.removeDuplicateSlashes(path)
+      : path
+    return trimTrailingSlash(collapsed)
+  }
+
+  // The path ends at the first `?`, `#`, or (opt-in) `;`, exactly where
+  // find-my-way's safeDecodeURI stops. Normalization applies to that half
+  // only: collapsing slashes in the query would rewrite `https://` targets.
   const parseUrl = url => {
     const originForm = toOriginForm(url)
-    const urlPath = ignoreDuplicateSlashes
-      ? FindMyWay.removeDuplicateSlashes(originForm)
-      : originForm
+    const questionIndex = originForm.indexOf('?', 1)
+    const hashIndex = originForm.indexOf('#', 1)
 
-    const delimiterIndex = findPathDelimiter(urlPath)
-    if (delimiterIndex === -1) {
-      return { path: trimTrailingSlash(urlPath), urlPath, query: null, search: null }
+    let delimiterIndex = questionIndex
+    if (hashIndex !== -1 && (delimiterIndex === -1 || hashIndex < delimiterIndex)) {
+      delimiterIndex = hashIndex
+    }
+    if (useSemicolonDelimiter) {
+      const semicolonIndex = originForm.indexOf(';', 1)
+      if (
+        semicolonIndex !== -1 &&
+        (delimiterIndex === -1 || semicolonIndex < delimiterIndex)
+      ) {
+        delimiterIndex = semicolonIndex
+      }
     }
 
-    const search = urlPath.substring(delimiterIndex)
+    const rawPath =
+      delimiterIndex === -1 ? originForm : originForm.substring(0, delimiterIndex)
+    const path = normalizePath(rawPath)
+
+    // A `?` after a `#` is fragment content, not a query string.
+    const hasQuery =
+      questionIndex !== -1 && (hashIndex === -1 || questionIndex < hashIndex)
+    const search = hasQuery ? originForm.substring(questionIndex) : null
+
     return {
-      path: trimTrailingSlash(urlPath.substring(0, delimiterIndex)),
-      urlPath,
-      query: search.substring(1),
+      path,
+      urlPath:
+        path === rawPath
+          ? originForm
+          : path + (delimiterIndex === -1 ? '' : originForm.substring(delimiterIndex)),
+      query: search === null ? null : search.substring(1),
       search
     }
   }
@@ -245,11 +261,11 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathMw = matchPathMiddleware(pathname)
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
-    // Only the mount middleware strips a prefix off req.url, so only it needs
-    // req.url realigned with the normalized path. Rewriting unconditionally
-    // would hand a rewritten url to a parent router we never matched for.
+    // Handed to the mount's strip middleware rather than assigned here: a
+    // global middleware can divert with next('router') before the mount runs,
+    // and the parent must see the url the client actually sent.
     if (pathMw !== undefined && urlInfo.urlPath !== req.url) {
-      req.url = urlInfo.urlPath
+      req[NORMALIZED_URL] = urlInfo.urlPath
     }
 
     if (routeHandlers !== null) {
