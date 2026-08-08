@@ -4,13 +4,18 @@ const test = require('ava').default
 
 const Router = require('..')
 
-// The invariant this file guards: however a mount is spelled, if a route under
-// it matches then that mount ran. A mount normalized differently than the route
-// silently drops its middleware, which for an auth mount is a bypass.
+// Two invariants this file guards, for every way a mount can be spelled:
 //
-// Scoped to one mount per router on purpose. When several mounts prefix the
-// same path only the longest runs — see the `longest matching .use() mount`
-// test in index.js — so a multi-mount router would not satisfy this shape.
+// 1. If a route under the mount matches, the mount ran. A mount normalized
+//    differently than the route silently drops its middleware, which for an
+//    auth mount is a bypass.
+// 2. Stripping the mount takes the same segments off req.url as off req.path.
+//    The two are walked by different code (raw url vs normalized path), so a
+//    disagreement eats into the tail the sub-router still needs.
+//
+// One mount per router keeps a failure readable: the spelling that broke is
+// the one registered. Overlapping mounts are covered in index.js, where every
+// matching mount runs and each gets its own frame.
 const OPTION_SETS = [
   {},
   { ignoreDuplicateSlashes: true },
@@ -23,6 +28,9 @@ const OPTION_SETS = [
   { caseSensitive: false, useSemicolonDelimiter: true }
 ]
 
+// Percent-encoded spellings are absent on purpose: find-my-way registers no
+// matchable route for them, so every combination would pass vacuously. The
+// `an encoded mount spelling matches nothing` test below pins that instead.
 const MOUNT_SPELLINGS = [
   '/admin',
   '//admin',
@@ -31,8 +39,7 @@ const MOUNT_SPELLINGS = [
   '/Admin',
   'admin',
   '/admin//panel',
-  '/admin/panel/',
-  '/ad%6din'
+  '/admin/panel/'
 ]
 
 const ROUTE_TAILS = [
@@ -41,7 +48,6 @@ const ROUTE_TAILS = [
   '//secret',
   '/Secret',
   '/panel/secret',
-  '/se%63ret',
   ''
 ]
 
@@ -71,9 +77,25 @@ const EXPECTED_COMBINATIONS =
   ROUTE_TAILS.length *
   REQUEST_MUTATORS.length
 
+// The mount is stripped from both, so whatever remains has to describe the
+// same resource: req.path is req.url's path half under this router's options.
+const stripsConsistently = (options, url, path) => {
+  const pathEnd = url.search(options.useSemicolonDelimiter ? /[?#;]/ : /[?#]/)
+  let expected = pathEnd === -1 ? url : url.substring(0, pathEnd)
+  if (options.ignoreDuplicateSlashes) expected = expected.replace(/\/{2,}/g, '/')
+  if (options.ignoreTrailingSlash && expected.length > 1) {
+    expected = expected.replace(/\/$/, '')
+  }
+  return (expected || '/') === path
+}
+
 test('a matched route never skips its mount, however the mount is spelled', t => {
   const bypasses = []
   const crashes = []
+  const desyncs = []
+  // A row whose route never runs asserts nothing; without this the matrix
+  // reads as coverage it does not have.
+  const exercised = new Set()
   let combinations = 0
 
   for (const options of OPTION_SETS) {
@@ -87,12 +109,16 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
         const describe = target =>
           `${JSON.stringify(options)} mount=${mount} route=${routePath} GET ${target}`
 
-        let mountRan = false
-        let routeRan = false
+        let mountRan
+        let routeRan
+        let stripped
 
         const router = Router(() => {}, options)
+        // Read inside the frame: the mount's view is stripped, and the route
+        // handler runs after the frame is undone.
         router.use(mount, (req, res, next) => {
           mountRan = true
+          stripped = { url: req.url, path: req.path }
           next()
         })
         router.get(routePath, (req, res) => {
@@ -104,6 +130,7 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
           const target = mutate(routePath)
           mountRan = false
           routeRan = false
+          stripped = undefined
           combinations++
 
           // A throw is a finding, not a combination to skip: the router funnels
@@ -116,7 +143,22 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
             continue
           }
 
+          if (routeRan) {
+            exercised.add(mount)
+            exercised.add(tail)
+          }
+
           if (routeRan && !mountRan) bypasses.push(describe(target))
+
+          if (
+            mountRan &&
+            stripped !== undefined &&
+            !stripsConsistently(options, stripped.url, stripped.path)
+          ) {
+            desyncs.push(
+              `${describe(target)} left url=${stripped.url} path=${stripped.path}`
+            )
+          }
         }
       }
     }
@@ -125,6 +167,29 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
   t.is(combinations, EXPECTED_COMBINATIONS)
   t.deepEqual(crashes, [])
   t.deepEqual(bypasses, [])
+  t.deepEqual(desyncs, [])
+  t.deepEqual(
+    [...MOUNT_SPELLINGS, ...ROUTE_TAILS].filter(row => !exercised.has(row)),
+    [],
+    'every mount spelling and route tail must reach the route at least once'
+  )
+})
+
+test('an encoded mount spelling matches nothing', t => {
+  const router = Router(() => {})
+  let mountRan = false
+
+  router.use('/ad%6din', (req, res, next) => {
+    mountRan = true
+    next()
+  })
+  router.get('/admin/secret', (req, res) => res.end())
+
+  for (const target of ['/admin/secret', '/ad%6din/secret']) {
+    mountRan = false
+    router({ method: 'GET', url: target }, createResponse())
+    t.false(mountRan, target)
+  }
 })
 
 test('.use() still runs for a mount with an empty first segment', t => {

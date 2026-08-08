@@ -13,6 +13,7 @@
     - [Starting the server](#starting-the-server)
   - [Advanced](#advanced)
     - [Request object](#request-object)
+    - [Mounted middleware](#mounted-middleware)
     - [Print routes](#print-routes)
     - [Nested routers](#nested-routers)
     - [Skipping to parent router](#skipping-to-parent-router)
@@ -169,6 +170,8 @@ The router adds these properties to `req`:
 | `req.params` | Route parameters object |
 | `req.query` | Raw query string (after `?`) |
 | `req.search` | Raw search string (including `?`) |
+| `req.baseUrl` | Mount prefix, while a mounted middleware runs |
+| `req.originalUrl` | The request target as the client sent it |
 
 > `req.query` and `req.search` are only set if not already present.
 
@@ -176,9 +179,39 @@ The router adds these properties to `req`:
 
 The query is what sits between `?` and `#`. A `?` inside a fragment is fragment content, not a query string.
 
-`req.url` keeps the value the client sent, except under a matching `.use()` mount — that mount strips its own prefix. Only the prefix is normalized, so a sub-router still receives the tail exactly as it arrived.
+### Mounted middleware
 
-When several `.use()` mounts prefix the same path, only the longest one runs: `use('/admin', auth)` alongside `use('/admin/panel', log)` runs `log` and not `auth` for `/admin/panel/x`. Register the broad middleware globally, or on every mount that needs it.
+`.use(path, ...fns)` mounts middleware under a path prefix, following Express semantics.
+
+Every mount whose prefix matches runs, in registration order — not just the longest one:
+
+```js
+router.use('/admin', authorize)
+router.use('/admin/panel', audit)
+router.get('/admin/panel/secret', handler)
+
+// GET /admin/panel/secret runs authorize, then audit, then handler
+```
+
+While a mount runs, the request is rooted at that mount: `req.url` and `req.path` have the prefix removed and `req.baseUrl` holds it. The frame is undone afterwards, so the route handler sees the full request:
+
+```js
+router.use('/admin', (req, res, next) => {
+  req.baseUrl // '/admin'
+  req.url     // '/panel/secret'
+  next()
+})
+router.get('/admin/panel/secret', (req, res) => {
+  req.baseUrl // ''
+  req.url     // '/admin/panel/secret'
+})
+```
+
+That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and `req.originalUrl` always holds the target the client sent.
+
+Only the mount's own prefix is normalized, so a sub-router receives the tail exactly as it arrived.
+
+> **Changed in 3.0.0.** Previously only the longest matching mount ran, and its prefix was stripped permanently — route handlers saw the shortened `req.path`. If you relied on that, read the prefix from `req.baseUrl` instead of reconstructing it, and expect `req.url` / `req.path` to be the full request inside route handlers. Middleware mounted with `.use()` is unaffected: it still sees the stripped view.
 
 An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
 

@@ -1,7 +1,7 @@
 'use strict'
 
 const { default: listen } = require('async-listen')
-const { createServer, get: httpGet } = require('http')
+const { createServer } = require('http')
 const { connect } = require('net')
 const test = require('ava').default
 
@@ -78,6 +78,23 @@ const assertAuthorized = async (t, url, path, message) =>
     'secret data',
     message
   )
+
+// A mount guards every request under it: denied without the header, through to
+// the route with it. The axis under test is the spelling of mount vs request.
+const testMountGuards = (title, { options, mount, route, requests }) =>
+  test(title, async t => {
+    const router = Router(final, options)
+
+    router.use(mount, authorize)
+    router.get(route, (req, res) => res.end('secret data'))
+
+    const url = await runServer(t, router)
+
+    for (const request of requests) {
+      await assertUnauthorized(t, url, request, request)
+      await assertAuthorized(t, url, request, request)
+    }
+  })
 
 test('throws error if the same route is added twice', t => {
   const router = Router(final)
@@ -806,10 +823,8 @@ test('handles bad URLs (invalid encoding)', async t => {
 
   const url = await runServer(t, router)
 
-  // invalid % encoding, using raw http to avoid got's URL validation
-  const response = await new Promise(resolve => {
-    httpGet(`${url.origin}/hello/%world`, resolve)
-  })
+  // invalid % encoding; only a raw socket sends it unvalidated
+  const response = await rawRequest(url, '/hello/%world')
 
   t.is(response.statusCode, 404)
 })
@@ -881,16 +896,10 @@ test('.use() sub-router matches base path with query string', async t => {
   )
 })
 
-test('multi-segment .use() mount runs path middleware', async t => {
-  const router = Router(final)
-
-  router.use('/admin/panel', authorize)
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/admin/panel/secret')
-  await assertAuthorized(t, url, '/admin/panel/secret')
+testMountGuards('multi-segment .use() mount runs path middleware', {
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/admin/panel/secret']
 })
 
 test('multi-segment .use() mounts a sub-router', async t => {
@@ -908,50 +917,122 @@ test('multi-segment .use() mounts a sub-router', async t => {
   t.is(await got(new URL('/api/v1/info', url).toString()), 'api-info')
 })
 
-test('longest matching .use() mount wins over a shorter prefix', async t => {
+test('every matching .use() mount runs, in registration order', async t => {
   const router = Router(final)
 
   router.use('/admin', (req, res, next) => {
-    req.mount = 'admin'
+    req.ran = ['admin']
     next()
   })
   router.use('/admin/panel', (req, res, next) => {
-    req.mount = 'admin-panel'
+    req.ran.push('admin-panel')
     next()
   })
-  router.get('/admin/settings', (req, res) => res.end(req.mount))
-  router.get('/admin/panel/secret', (req, res) => res.end(req.mount))
+  router.get('/admin/settings', (req, res) => res.end(req.ran.join(' ')))
+  router.get('/admin/panel/secret', (req, res) => res.end(req.ran.join(' ')))
 
   const url = await runServer(t, router)
 
   t.is(await got(new URL('/admin/settings', url).toString()), 'admin')
-  t.is(await got(new URL('/admin/panel/secret', url).toString()), 'admin-panel')
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'admin admin-panel'
+  )
 })
 
-test('.use() trailing-slash mount still runs path middleware', async t => {
+test('a shorter mount registered later still runs after the longer one', async t => {
   const router = Router(final)
 
-  router.use('/admin/', authorize)
-  router.get('/admin/secret', (req, res) => res.end('secret data'))
+  router.use('/admin/panel', (req, res, next) => {
+    req.ran = ['admin-panel']
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    req.ran.push('admin')
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) => res.end(req.ran.join(' ')))
 
   const url = await runServer(t, router)
 
-  await assertUnauthorized(t, url, '/admin/secret')
-  await assertAuthorized(t, url, '/admin/secret')
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'admin-panel admin'
+  )
 })
 
-test('.use() path middleware runs for a percent-encoded mount segment', async t => {
+test('each mount sees the request rooted at its own mount path', async t => {
   const router = Router(final)
+  const seen = []
 
-  router.use('/admin', authorize)
-  router.get('/admin/secret', (req, res) => res.end('secret data'))
+  router.use('/admin', (req, res, next) => {
+    seen.push(`outer url=${req.url} baseUrl=${req.baseUrl}`)
+    next()
+  })
+  router.use('/admin/panel', (req, res, next) => {
+    seen.push(`inner url=${req.url} baseUrl=${req.baseUrl}`)
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) =>
+    res.end(`${seen.join(' | ')} | route url=${req.url} baseUrl=${req.baseUrl}`)
+  )
 
   const url = await runServer(t, router)
 
-  for (const path of ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']) {
-    await assertUnauthorized(t, url, path, `${path} should be unauthorized`)
-    await assertAuthorized(t, url, path, `${path} should reach the handler`)
-  }
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'outer url=/panel/secret baseUrl=/admin | ' +
+      'inner url=/secret baseUrl=/admin/panel | ' +
+      'route url=/admin/panel/secret baseUrl='
+  )
+})
+
+test('req.baseUrl accumulates through a mounted sub-router', async t => {
+  const child = Router(final)
+  child.use('/panel', (req, res) => res.end(`${req.baseUrl}|${req.url}`))
+
+  const parent = Router(final)
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/panel/x', url).toString()), '/admin/panel|/x')
+})
+
+test('req.originalUrl keeps the target the client sent', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin/x', (req, res) => res.end(req.originalUrl))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x?q=1', url).toString()), '/admin/x?q=1')
+})
+
+test('an error handler sees the unstripped request', async t => {
+  const router = Router((err, req, res) => res.end(`${err.message}|${req.url}`))
+
+  router.use('/admin', () => {
+    throw new Error('boom')
+  })
+  router.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), 'boom|/admin/x')
+})
+
+testMountGuards('.use() trailing-slash mount still runs path middleware', {
+  mount: '/admin/',
+  route: '/admin/secret',
+  requests: ['/admin/secret']
+})
+
+testMountGuards('.use() path middleware runs for a percent-encoded mount segment', {
+  mount: '/admin',
+  route: '/admin/secret',
+  requests: ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']
 })
 
 test('.use() strips an encoded mount before a nested handler sees the path', async t => {
@@ -972,16 +1053,10 @@ test('.use() strips an encoded mount before a nested handler sees the path', asy
   )
 })
 
-test('.use() multi-segment encoded mount still runs path middleware', async t => {
-  const router = Router(final)
-
-  router.use('/admin/panel', authorize)
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/%61dmin/panel/secret')
-  await assertAuthorized(t, url, '/%61dmin/panel/secret')
+testMountGuards('.use() multi-segment encoded mount still runs path middleware', {
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/%61dmin/panel/secret']
 })
 
 test('.use() does not treat %2F as a mount separator', async t => {
@@ -1008,40 +1083,25 @@ test('.use() does not treat %2F as a mount separator', async t => {
   t.true(mounted)
 })
 
-test('.use() still runs when ignoreDuplicateSlashes matches the route', async t => {
-  const router = Router(final, { ignoreDuplicateSlashes: true })
-
-  router.use('/admin/panel', authorize)
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/admin//panel/secret')
-  await assertAuthorized(t, url, '/admin//panel/secret')
+testMountGuards('.use() still runs when ignoreDuplicateSlashes matches the route', {
+  options: { ignoreDuplicateSlashes: true },
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/admin//panel/secret']
 })
 
-test('.use() still runs when useSemicolonDelimiter matches the route', async t => {
-  const router = Router(final, { useSemicolonDelimiter: true })
-
-  router.use('/admin', authorize)
-  router.get('/admin', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/admin;sid=1')
-  await assertAuthorized(t, url, '/admin;sid=1')
+testMountGuards('.use() still runs when useSemicolonDelimiter matches the route', {
+  options: { useSemicolonDelimiter: true },
+  mount: '/admin',
+  route: '/admin',
+  requests: ['/admin;sid=1']
 })
 
-test('.use() still runs when caseSensitive:false matches the route', async t => {
-  const router = Router(final, { caseSensitive: false })
-
-  router.use('/admin', authorize)
-  router.get('/admin/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/Admin/secret')
-  await assertAuthorized(t, url, '/Admin/secret')
+testMountGuards('.use() still runs when caseSensitive:false matches the route', {
+  options: { caseSensitive: false },
+  mount: '/admin',
+  route: '/admin/secret',
+  requests: ['/Admin/secret']
 })
 
 test('onBadUrl handler does not crash the request', async t => {
@@ -1103,7 +1163,7 @@ test('.use() still runs for absolute-form request targets', async t => {
   const router = Router(final)
 
   router.use('/admin', authorize)
-  router.get('/admin/secret', (req, res) => res.end(`${req.path}|${req.url}`))
+  router.use('/admin', (req, res) => res.end(`${req.path}|${req.url}|${req.baseUrl}`))
 
   const url = await runServer(t, router)
   const target = `http://${url.host}/admin/secret`
@@ -1114,7 +1174,7 @@ test('.use() still runs for absolute-form request targets', async t => {
 
   const allowed = await rawRequest(url, target, { authorization: 'secret' })
   t.is(allowed.statusCode, 200)
-  t.is(allowed.body, '/secret|/secret')
+  t.is(allowed.body, '/secret|/secret|/admin')
 })
 
 test('absolute-form request targets keep the query string', async t => {
@@ -1201,28 +1261,18 @@ test('req.path mirrors ignoreTrailingSlash', async t => {
   t.is(await got(new URL('/admin', url).toString()), '/admin')
 })
 
-test('.use() still runs for a mount registered with duplicate slashes', async t => {
-  const router = Router(final, { ignoreDuplicateSlashes: true })
-
-  router.use('/admin//panel', authorize)
-  router.get('/admin//panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/admin/panel/secret')
-  await assertAuthorized(t, url, '/admin/panel/secret')
+testMountGuards('.use() still runs for a mount registered with duplicate slashes', {
+  options: { ignoreDuplicateSlashes: true },
+  mount: '/admin//panel',
+  route: '/admin//panel/secret',
+  requests: ['/admin/panel/secret']
 })
 
-test('.use() still runs for a mount registered with a trailing slash', async t => {
-  const router = Router(final, { ignoreTrailingSlash: true })
-
-  router.use('/admin/', authorize)
-  router.get('/admin/secret/', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  await assertUnauthorized(t, url, '/admin/secret')
-  await assertAuthorized(t, url, '/admin/secret')
+testMountGuards('.use() still runs for a mount registered with a trailing slash', {
+  options: { ignoreTrailingSlash: true },
+  mount: '/admin/',
+  route: '/admin/secret/',
+  requests: ['/admin/secret']
 })
 
 test('a diverting router leaves no normalization state for the next one', async t => {
@@ -1254,56 +1304,31 @@ test('respects a pre-set req.search', async t => {
   t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|foo=bar')
 })
 
-test('.use() still runs when useSemicolonDelimiter is truthy', async t => {
-  const router = Router(final, { useSemicolonDelimiter: 1 })
-
-  router.use('/admin', authorize)
-  router.get('/admin', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-  const res = await got(new URL('/admin;sid=1', url).toString(), {
-    resolveBodyOnly: false
-  })
-
-  t.is(res.statusCode, 401)
-  t.is(res.body, 'unauthorized')
+testMountGuards('.use() still runs when useSemicolonDelimiter is truthy', {
+  options: { useSemicolonDelimiter: 1 },
+  mount: '/admin',
+  route: '/admin',
+  requests: ['/admin;sid=1']
 })
 
-test('.use() still runs when ignoreDuplicateSlashes is truthy', async t => {
-  const router = Router(final, { ignoreDuplicateSlashes: 1 })
-
-  router.use('/admin/panel', authorize)
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-  const res = await got(new URL('/admin//panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-
-  t.is(res.statusCode, 401)
-  t.is(res.body, 'unauthorized')
+testMountGuards('.use() still runs when ignoreDuplicateSlashes is truthy', {
+  options: { ignoreDuplicateSlashes: 1 },
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/admin//panel/secret']
 })
 
-test('.use() still runs when caseSensitive is a falsy non-boolean', async t => {
-  const router = Router(final, { caseSensitive: 0 })
-
-  router.use('/Admin', authorize)
-  router.get('/Admin/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-  const res = await got(new URL('/admin/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-
-  t.is(res.statusCode, 401)
-  t.is(res.body, 'unauthorized')
+testMountGuards('.use() still runs when caseSensitive is a falsy non-boolean', {
+  options: { caseSensitive: 0 },
+  mount: '/Admin',
+  route: '/Admin/secret',
+  requests: ['/admin/secret']
 })
 
 test('.use() keeps a leading slash when stripping a semicolon path', async t => {
   const router = Router(final, { useSemicolonDelimiter: true })
 
-  router.use('/admin', (req, res, next) => next())
-  router.get('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+  router.use('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
 
   const url = await runServer(t, router)
 
@@ -1313,8 +1338,7 @@ test('.use() keeps a leading slash when stripping a semicolon path', async t => 
 test('.use() keeps a leading slash when stripping a fragment path', async t => {
   const router = Router(final)
 
-  router.use('/admin', (req, res, next) => next())
-  router.get('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+  router.use('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
 
   const url = await runServer(t, router)
   const res = await rawRequest(url, '/admin#x')
