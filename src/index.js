@@ -25,11 +25,14 @@ const requiredFinalHandler = () => {
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
+// An empty first segment (`//admin`) must still bucket to `/` for both mounts
+// and request paths; returning the whole path would put them in separate
+// buckets that never meet.
 const getFirstPathSegment = pathname => {
   const secondSlashIndex = pathname.indexOf('/', 1)
-  return secondSlashIndex > 1
-    ? pathname.substring(0, secondSlashIndex)
-    : pathname
+  return secondSlashIndex === -1
+    ? pathname
+    : pathname.substring(0, secondSlashIndex)
 }
 
 const normalizeMountPath = path => {
@@ -332,7 +335,12 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         globalMiddlewares.push(middlewares[i])
       }
     } else {
-      let normalizedPath = normalizeMountPath(path)
+      // Mirror find-my-way's `on` normalization, the registration-side twin of
+      // the lookup normalization in parseUrl: a mount it does not collapse the
+      // same way stops matching a route find-my-way still resolves.
+      let normalizedPath = normalizeMountPath(
+        ignoreDuplicateSlashes ? FindMyWay.removeDuplicateSlashes(path) : path
+      )
       if (lowercaseMountPath) normalizedPath = normalizedPath.toLowerCase()
       const middlewares = fns.filter(Boolean)
 

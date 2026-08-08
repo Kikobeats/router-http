@@ -1273,6 +1273,43 @@ test('req.path mirrors ignoreTrailingSlash', async t => {
   t.is(await got(new URL('/admin', url).toString()), '/admin')
 })
 
+test('.use() still runs for a mount registered with duplicate slashes', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.use('/admin//panel', authorize)
+  router.get('/admin//panel/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin/panel/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data'
+  )
+})
+
+test('.use() still runs for a mount registered with a trailing slash', async t => {
+  const router = Router(final, { ignoreTrailingSlash: true })
+
+  router.use('/admin/', authorize)
+  router.get('/admin/secret/', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await got(new URL('/admin/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+})
+
 test('respects a pre-set req.search', async t => {
   const router = Router(final)
 
