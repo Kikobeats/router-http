@@ -356,8 +356,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           const prefix = originUrl.substring(0, urlPrefixEnd)
           req.baseUrl = entryBaseUrl + prefix
           req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
-          req.path =
-            pathname.substring(getSegmentEnd(pathname, segments)) || '/'
+          // Without collapsing, pathname is originUrl's path half and both
+          // walks stop at the same delimiter, so the second one is derivable.
+          const pathPrefixEnd = ignoreDuplicateSlashes
+            ? getSegmentEnd(pathname, segments)
+            : urlPrefixEnd < pathname.length
+              ? urlPrefixEnd
+              : pathname.length
+          req.path = pathname.substring(pathPrefixEnd) || '/'
           frameEntered = true
           current = mount.mw
           cursor = 0
