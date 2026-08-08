@@ -345,67 +345,39 @@ test('multi `.use`', async t => {
   }
 })
 
-test('catch sync exceptions', async t => {
-  t.plan(8)
+for (const [kind, throwing] of [
+  ['sync', () => { throw new Error('oh no') }],
+  ['async', async () => { throw new Error('oh no') }]
+]) {
+  test(`catch ${kind} exceptions`, async t => {
+    t.plan(8)
 
-  const router = Router((err, req, res) => {
-    t.truthy(err)
-    t.truthy(req)
-    t.truthy(res)
-    res.statusCode = err ? 500 : 404
-    res.end(err ? err.message : 'Not Found')
+    const router = Router((err, req, res) => {
+      t.truthy(err)
+      t.truthy(req)
+      t.truthy(res)
+      res.statusCode = err ? 500 : 404
+      res.end(err ? err.message : 'Not Found')
+    })
+
+    router
+      .use((req, res, next) => {
+        req.one = 'one'
+        next()
+      })
+      .use((req, res, next) => {
+        req.two = 'two'
+        next()
+      })
+      .get('/', throwing)
+      .get('/greetings', (req, res) => res.end('greetings!'))
+
+    const url = await runServer(t, router)
+
+    t.is(await got(url), 'oh no')
+    t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
   })
-
-  router
-    .use((req, res, next) => {
-      req.one = 'one'
-      next()
-    })
-    .use((req, res, next) => {
-      req.two = 'two'
-      next()
-    })
-    .get('/', (req, res) => {
-      throw new Error('oh no')
-    })
-    .get('/greetings', (req, res) => res.end('greetings!'))
-
-  const url = await runServer(t, router)
-
-  t.is(await got(url), 'oh no')
-  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
-})
-
-test('catch async exceptions', async t => {
-  t.plan(8)
-
-  const router = Router((err, req, res) => {
-    t.truthy(err)
-    t.truthy(req)
-    t.truthy(res)
-    res.statusCode = err ? 500 : 404
-    res.end(err ? err.message : 'Not Found')
-  })
-
-  router
-    .use((req, res, next) => {
-      req.one = 'one'
-      next()
-    })
-    .use((req, res, next) => {
-      req.two = 'two'
-      next()
-    })
-    .get('/', async (req, res) => {
-      throw new Error('oh no')
-    })
-    .get('/greetings', (req, res) => res.end('greetings!'))
-
-  const url = await runServer(t, router)
-
-  t.is(await got(url), 'oh no')
-  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
-})
+}
 
 test('`.use` with error', async t => {
   const router = Router(final)
@@ -816,9 +788,8 @@ test('handlers can be passed as an array', async t => {
   t.deepEqual(executionOrder, ['middleware1', 'middleware2', 'final'])
 })
 
-test('internal _add method Map initialization', t => {
+test('a single-method route registers once', t => {
   const router = Router(final)
-  // This will hit the !methodMap branch for POST
   router.post('/bar', () => {})
   t.is(router.routes.length, 1)
 })
@@ -1529,4 +1500,78 @@ test("next('route') skips the rest of the current layer", async t => {
   const url = await runServer(t, router)
 
   t.is(await got(new URL('/a', url).toString()), 'Not Found')
+})
+
+test('a url rewritten before a mount survives the frame', async t => {
+  const router = Router(final)
+
+  router.use((req, res, next) => {
+    req.url = '/admin/other'
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    req.seen = req.url
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.seen}|${req.url}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), '/other|/admin/other')
+})
+
+test('a url rewritten inside a mount survives leaving it', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    req.url = '/rewritten'
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/x', url).toString()),
+    '/admin/rewritten|/admin/rewritten'
+  )
+})
+
+test("next('route') from middleware continues to the next layer", async t => {
+  const router = Router(final)
+  const ran = []
+  const mark = name => (req, res, next) => {
+    ran.push(name)
+    next()
+  }
+
+  router.use((req, res, next) => {
+    ran.push('g1')
+    next('route')
+  })
+  router.use(mark('g2'))
+  router.use('/a', mark('m1'))
+  router.use(mark('g3'))
+  router.get('/a/b', (req, res) => res.end(ran.join(',')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a/b', url).toString()), 'g1,g2,m1,g3')
+})
+
+test('consecutive .use() on the same path keep running in order', async t => {
+  const router = Router(final)
+  const ran = []
+  const mark = name => (req, res, next) => {
+    ran.push(name)
+    next()
+  }
+
+  router.use('/api', mark('cors'))
+  router.use('/api', mark('auth'))
+  router.get('/api/x', (req, res) => res.end(ran.join(',')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/api/x', url).toString()), 'cors,auth')
 })

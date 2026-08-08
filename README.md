@@ -26,7 +26,7 @@ A middleware-style router similar to [express router](https://github.com/pillarj
 
 - **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a trie-based router with constant O(1) lookup time.
 - **Battle-tested** – Well maintained with comprehensive test coverage.
-- **Lightweight** – Only 1.3 kB (minifized + gzipped)
+- **Lightweight** – Only 2 kB (minified + gzipped)
 
 ## Why not Express router?
 
@@ -149,12 +149,6 @@ The router is a standard request handler. Pass it to `http.createServer`:
 ```js
 const http = require('http')
 
-console.log(router.prettyPrint())
-// └── / (GET)
-//     ├── favicon.ico (GET)
-//     └── user/
-//         └── :id (GET)
-
 http.createServer(router).listen(3000)
 ```
 
@@ -209,7 +203,7 @@ router.get('/admin/panel/secret', (req, res) => {
 
 That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and `req.originalUrl` always holds the target the client sent.
 
-Only the mount's own prefix is normalized, so a sub-router receives the tail exactly as it arrived.
+Only the mount's own prefix is removed, so a sub-router receives the tail as the client sent it — duplicate and trailing slashes included, even when this router is collapsing them. The one rewrite that survives into the tail is absolute-form: `GET http://example.com/v1/info` reaches a `/v1` sub-router as `/info`.
 
 > **Changed in 3.0.0.** Previously only the longest matching mount ran, and its prefix was stripped permanently — route handlers saw the shortened `req.path`. If you relied on that, read the prefix from `req.baseUrl` instead of reconstructing it, and expect `req.url` / `req.path` to be the full request inside route handlers. Middleware mounted with `.use()` is unaffected: it still sees the stripped view.
 

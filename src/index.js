@@ -199,8 +199,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const mountsByFirstSegment = new NullProtoObj()
   // While every mount shares one first segment there is nothing to
   // discriminate, so the bucket key is not worth deriving.
+  let lastMount = null
   let soleBucket = null
-  let bucketCount = 0
   let mountCount = 0
 
   // Every mount that prefixes the path, not just the longest: each one gets its
@@ -264,7 +264,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
 
     const matchedMounts = matchMounts(pathname)
-    const mountCount = matchedMounts.length
+    const matchedCount = matchedMounts.length
     let routeHandlers = EMPTY_HANDLERS
 
     if (match !== null) {
@@ -289,7 +289,12 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl
     req.baseUrl = entryBaseUrl
 
-    const originUrl = mountCount > 0 ? toOriginForm(entryUrl) : entryUrl
+    // What the frame removed, so leaving it can put it back rather than
+    // reinstating a snapshot and discarding whatever middleware wrote since.
+    let framePrefix = ''
+    let frameUrl = ''
+    let frameSourceUrl = entryUrl
+    let frameSourcePath = pathname
 
     const globalCount = globalMiddlewares.length
 
@@ -304,9 +309,16 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
     const leaveFrame = () => {
       frameEntered = false
-      req.url = entryUrl
-      req.path = pathname
       req.baseUrl = entryBaseUrl
+      if (req.url === frameUrl) {
+        req.url = frameSourceUrl
+        req.path = frameSourcePath
+        return
+      }
+      // A middleware rewrote the url inside the frame. Express re-prepends
+      // what it removed, so the edit survives instead of being reverted.
+      req.url = framePrefix + (req.url === '/' ? '' : req.url)
+      req.path = parseUrl(req.url).path
     }
 
     // Both exits abandon the remaining middleware and undo the frame, so the
@@ -316,16 +328,17 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const handleNext = err => {
       if (err) {
         // 'route' abandons the rest of the current layer only.
+        // Express only lets 'route' skip a route's own handler stack; from
+        // middleware it continues to the next layer like a plain next().
         if (err === 'route') {
-          cursor = limit
+          if (routeStarted) cursor = limit
           return executeLoop()
         }
-        mountIndex = mountCount
+        mountIndex = matchedCount
         globalIndex = globalCount
         routeStarted = true
         cursor = 0
         limit = 0
-        current = EMPTY_HANDLERS
         if (frameEntered) leaveFrame()
         if (err !== 'router') return finalhandler(err, req, res, next)
         if (next !== undefined) return next()
@@ -347,23 +360,33 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
       while (cursor >= limit) {
         if (
-          mountIndex < mountCount &&
+          mountIndex < matchedCount &&
           globalIndex >= matchedMounts[mountIndex].globalsBefore
         ) {
+          // Leave the previous frame first: each mount strips its prefix off
+          // the whole request, not off what the mount before it left behind.
+          if (frameEntered) leaveFrame()
           const mount = matchedMounts[mountIndex++]
           const segments = mount.segments
+          // Derived from the url as it stands, not from a request-entry
+          // snapshot: an earlier middleware may have rewritten it, and the
+          // frame has to strip the prefix off what is actually there.
+          frameSourceUrl = req.url
+          frameSourcePath = req.path
+          const originUrl = toOriginForm(frameSourceUrl)
           const urlPrefixEnd = getSegmentEnd(originUrl, segments)
-          const prefix = originUrl.substring(0, urlPrefixEnd)
-          req.baseUrl = entryBaseUrl + prefix
+          framePrefix = originUrl.substring(0, urlPrefixEnd)
+          req.baseUrl = entryBaseUrl + framePrefix
           req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
-          // Without collapsing, pathname is originUrl's path half and both
-          // walks stop at the same delimiter, so the second one is derivable.
+          frameUrl = req.url
+          // Without collapsing, the path is the url's path half and both walks
+          // stop at the same delimiter, so the second one is derivable.
           const pathPrefixEnd = ignoreDuplicateSlashes
-            ? getSegmentEnd(pathname, segments)
-            : urlPrefixEnd < pathname.length
+            ? getSegmentEnd(frameSourcePath, segments)
+            : urlPrefixEnd < frameSourcePath.length
               ? urlPrefixEnd
-              : pathname.length
-          req.path = pathname.substring(pathPrefixEnd) || '/'
+              : frameSourcePath.length
+          req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
           frameEntered = true
           current = mount.mw
           cursor = 0
@@ -376,7 +399,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           current = globalMiddlewares
           cursor = globalIndex
           globalIndex =
-            mountIndex < mountCount
+            mountIndex < matchedCount
               ? matchedMounts[mountIndex].globalsBefore
               : globalCount
           limit = globalIndex
@@ -423,13 +446,22 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     if (bucket === undefined) {
       bucket = []
       mountsByFirstSegment[segment] = bucket
-      bucketCount++
-      soleBucket = bucketCount === 1 ? bucket : null
+      soleBucket = mountCount === 0 ? bucket : null
     }
 
     // One layer per `.use()` call rather than one per distinct path: appending
     // to an earlier layer would run this middleware at that layer's position,
     // ahead of anything registered in between.
+    // Consecutive registrations of the same path have nothing in between to
+    // jump ahead of, so they still share a layer and keep matching allocation-free.
+    if (
+      lastMount !== null &&
+      lastMount.path === mountPath &&
+      lastMount.globalsBefore === globalMiddlewares.length
+    ) {
+      return lastMount.mw
+    }
+
     const mount = {
       path: mountPath,
       segments: countSegments(mountPath),
@@ -440,6 +472,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     // Preallocated so a single match, the common case, allocates nothing.
     mount.solo = [mount]
     bucket.push(mount)
+    lastMount = mount
     mountCount++
 
     return mount.mw
@@ -447,7 +480,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   handler.use = (path = '/', ...fns) => {
     const pathIsMiddleware =
-      typeof path === 'function' || typeof path === 'boolean'
+      typeof path !== 'string'
     const middlewares = (pathIsMiddleware ? [path, ...fns] : fns).filter(Boolean)
     if (middlewares.length === 0) return handler
 
