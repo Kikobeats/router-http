@@ -1,7 +1,8 @@
 'use strict'
 
 const { default: listen } = require('async-listen')
-const { createServer } = require('http')
+const { createServer, get: httpGet } = require('http')
+const { connect } = require('net')
 const test = require('ava').default
 
 const got = require('got').extend({
@@ -29,6 +30,54 @@ const runServer = async (t, handler) => {
   t.teardown(() => closeServer(server))
   return url
 }
+
+// got/http.get normalize the request target; only a raw socket can send
+// fragments and absolute-form targets on the wire.
+const rawRequest = (url, target, headers = {}) =>
+  new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      const lines = Object.keys(headers).map(key => `${key}: ${headers[key]}\r\n`)
+      socket.write(`GET ${target} HTTP/1.0\r\nHost: ${url.host}\r\n${lines.join('')}\r\n`)
+    })
+    let raw = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      raw += chunk
+    })
+    socket.on('error', reject)
+    socket.on('end', () => {
+      const separator = raw.indexOf('\r\n\r\n')
+      resolve({
+        statusCode: Number(raw.substring(9, 12)),
+        body: raw.substring(separator + 4)
+      })
+    })
+  })
+
+const authorize = (req, res, next) => {
+  if (req.headers.authorization !== 'secret') {
+    res.statusCode = 401
+    return res.end('unauthorized')
+  }
+  next()
+}
+
+const assertUnauthorized = async (t, url, path, message) => {
+  const denied = await got(new URL(path, url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401, message)
+  t.is(denied.body, 'unauthorized', message)
+}
+
+const assertAuthorized = async (t, url, path, message) =>
+  t.is(
+    await got(new URL(path, url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data',
+    message
+  )
 
 test('throws error if the same route is added twice', t => {
   const router = Router(final)
@@ -755,14 +804,11 @@ test('handles bad URLs (invalid encoding)', async t => {
     res.end('hello')
   })
 
-  const server = createServer(router)
-  const url = await listen(server)
-  t.teardown(() => server.close())
+  const url = await runServer(t, router)
 
   // invalid % encoding, using raw http to avoid got's URL validation
-  const path = '/hello/%world'
   const response = await new Promise(resolve => {
-    require('http').get(`${url.origin}${path}`, resolve)
+    httpGet(`${url.origin}/hello/%world`, resolve)
   })
 
   t.is(response.statusCode, 404)
@@ -838,29 +884,13 @@ test('.use() sub-router matches base path with query string', async t => {
 test('multi-segment .use() mount runs path middleware', async t => {
   const router = Router(final)
 
-  router.use('/admin/panel', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin/panel', authorize)
   router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin/panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin/panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/admin/panel/secret')
+  await assertAuthorized(t, url, '/admin/panel/secret')
 })
 
 test('multi-segment .use() mounts a sub-router', async t => {
@@ -901,59 +931,26 @@ test('longest matching .use() mount wins over a shorter prefix', async t => {
 test('.use() trailing-slash mount still runs path middleware', async t => {
   const router = Router(final)
 
-  router.use('/admin/', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin/', authorize)
   router.get('/admin/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/admin/secret')
+  await assertAuthorized(t, url, '/admin/secret')
 })
 
 test('.use() path middleware runs for a percent-encoded mount segment', async t => {
   const router = Router(final)
 
-  router.use('/admin', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin', authorize)
   router.get('/admin/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
   for (const path of ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']) {
-    const denied = await got(new URL(path, url).toString(), {
-      resolveBodyOnly: false
-    })
-    t.is(denied.statusCode, 401, `${path} should be unauthorized`)
-    t.is(denied.body, 'unauthorized')
-
-    t.is(
-      await got(new URL(path, url).toString(), {
-        headers: { authorization: 'secret' }
-      }),
-      'secret data',
-      `${path} should reach the handler after auth`
-    )
+    await assertUnauthorized(t, url, path, `${path} should be unauthorized`)
+    await assertAuthorized(t, url, path, `${path} should reach the handler`)
   }
 })
 
@@ -978,29 +975,13 @@ test('.use() strips an encoded mount before a nested handler sees the path', asy
 test('.use() multi-segment encoded mount still runs path middleware', async t => {
   const router = Router(final)
 
-  router.use('/admin/panel', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin/panel', authorize)
   router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/%61dmin/panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/%61dmin/panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/%61dmin/panel/secret')
+  await assertAuthorized(t, url, '/%61dmin/panel/secret')
 })
 
 test('.use() does not treat %2F as a mount separator', async t => {
@@ -1030,85 +1011,37 @@ test('.use() does not treat %2F as a mount separator', async t => {
 test('.use() still runs when ignoreDuplicateSlashes matches the route', async t => {
   const router = Router(final, { ignoreDuplicateSlashes: true })
 
-  router.use('/admin/panel', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin/panel', authorize)
   router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin//panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin//panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/admin//panel/secret')
+  await assertAuthorized(t, url, '/admin//panel/secret')
 })
 
 test('.use() still runs when useSemicolonDelimiter matches the route', async t => {
   const router = Router(final, { useSemicolonDelimiter: true })
 
-  router.use('/admin', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin', authorize)
   router.get('/admin', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin;sid=1', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin;sid=1', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/admin;sid=1')
+  await assertAuthorized(t, url, '/admin;sid=1')
 })
 
 test('.use() still runs when caseSensitive:false matches the route', async t => {
   const router = Router(final, { caseSensitive: false })
 
-  router.use('/admin', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
+  router.use('/admin', authorize)
   router.get('/admin/secret', (req, res) => res.end('secret data'))
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/Admin/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/Admin/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/Admin/secret')
+  await assertAuthorized(t, url, '/Admin/secret')
 })
 
 test('onBadUrl handler does not crash the request', async t => {
@@ -1121,24 +1054,13 @@ test('onBadUrl handler does not crash the request', async t => {
 
   router.get('/hello/:name', (req, res) => res.end(req.params.name))
 
-  const server = createServer(router)
-  const url = await listen(server)
-  t.teardown(() => server.close())
+  const url = await runServer(t, router)
 
-  // invalid % encoding; use raw http to avoid got's URL validation
-  const path = '/hello/%world'
-  const res = await new Promise(resolve => {
-    require('http').get(`${url.origin}${path}`, resolve)
-  })
-  const body = await new Promise(resolve => {
-    let data = ''
-    res.on('data', chunk => {
-      data += chunk
-    })
-    res.on('end', () => resolve(data))
-  })
+  // invalid % encoding; only a raw socket sends it unvalidated
+  const res = await rawRequest(url, '/hello/%world')
+
   t.is(res.statusCode, 400)
-  t.is(body, 'bad:/hello/%world')
+  t.is(res.body, 'bad:/hello/%world')
 })
 
 test('onMaxParamLength handler does not crash the request', async t => {
@@ -1159,37 +1081,6 @@ test('onMaxParamLength handler does not crash the request', async t => {
   t.is(res.statusCode, 414)
   t.is(res.body, 'long:/hello/abcd')
 })
-
-// got/http.get normalize the request target; only a raw socket can send
-// fragments and absolute-form targets on the wire.
-const rawRequest = (url, target, headers = {}) =>
-  new Promise((resolve, reject) => {
-    const socket = require('net').connect(Number(url.port), url.hostname, () => {
-      const lines = Object.keys(headers).map(key => `${key}: ${headers[key]}\r\n`)
-      socket.write(`GET ${target} HTTP/1.0\r\nHost: ${url.host}\r\n${lines.join('')}\r\n`)
-    })
-    let raw = ''
-    socket.setEncoding('utf8')
-    socket.on('data', chunk => {
-      raw += chunk
-    })
-    socket.on('error', reject)
-    socket.on('end', () => {
-      const separator = raw.indexOf('\r\n\r\n')
-      resolve({
-        statusCode: Number(raw.substring(9, 12)),
-        body: raw.substring(separator + 4)
-      })
-    })
-  })
-
-const authorize = (req, res, next) => {
-  if (req.headers.authorization !== 'secret') {
-    res.statusCode = 401
-    return res.end('unauthorized')
-  }
-  next()
-}
 
 test('.use() still runs when a fragment truncates the route path', async t => {
   const router = Router(final)
@@ -1318,18 +1209,8 @@ test('.use() still runs for a mount registered with duplicate slashes', async t 
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin/panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin/panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+  await assertUnauthorized(t, url, '/admin/panel/secret')
+  await assertAuthorized(t, url, '/admin/panel/secret')
 })
 
 test('.use() still runs for a mount registered with a trailing slash', async t => {
@@ -1340,11 +1221,8 @@ test('.use() still runs for a mount registered with a trailing slash', async t =
 
   const url = await runServer(t, router)
 
-  const denied = await got(new URL('/admin/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
+  await assertUnauthorized(t, url, '/admin/secret')
+  await assertAuthorized(t, url, '/admin/secret')
 })
 
 test('a diverting router leaves no normalization state for the next one', async t => {
@@ -1442,4 +1320,68 @@ test('.use() keeps a leading slash when stripping a fragment path', async t => {
   const res = await rawRequest(url, '/admin#x')
 
   t.is(res.body, '/#x|/')
+})
+
+test('a mounted sub-router keeps the trailing slash in its tail', async t => {
+  const child = Router(final)
+  child.get('/x/', (req, res) => res.end('child'))
+
+  const parent = Router(final, { ignoreTrailingSlash: true })
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/x/', url).toString()), 'child')
+})
+
+test('a mounted sub-router keeps duplicate slashes in its tail', async t => {
+  const child = Router(final)
+  child.use((req, res) => res.end(req.url))
+
+  const parent = Router(final, { ignoreDuplicateSlashes: true })
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/a//b', url).toString()), '/a//b')
+})
+
+test('.use() treats a `//` mount as global', async t => {
+  const router = Router(final)
+
+  router.use('//', (req, res, next) => {
+    req.mounted = true
+    next()
+  })
+  router.get('/x', (req, res) => res.end(String(req.mounted)))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/x', url).toString()), 'true')
+})
+
+test('req.query ends at a fragment', async t => {
+  const router = Router(final)
+
+  router.get('/a', (req, res) => res.end(`${req.query}|${req.search}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/a?b=1#frag')
+
+  t.is(res.body, 'b=1|?b=1')
+})
+
+test('a second router re-parses the query after req.url is rewritten', async t => {
+  const first = Router(final)
+  const second = Router(final)
+  second.get('/b', (req, res) => res.end(String(req.query)))
+
+  const url = await runServer(t, (req, res) =>
+    first(req, res, () => {
+      req.url = '/b?x=1'
+      second(req, res)
+    })
+  )
+
+  t.is(await got(new URL('/a', url).toString()), 'x=1')
 })

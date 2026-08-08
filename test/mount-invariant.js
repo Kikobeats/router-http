@@ -65,55 +65,65 @@ const createResponse = () => ({
   }
 })
 
+const EXPECTED_COMBINATIONS =
+  OPTION_SETS.length *
+  MOUNT_SPELLINGS.length *
+  ROUTE_TAILS.length *
+  REQUEST_MUTATORS.length
+
 test('a matched route never skips its mount, however the mount is spelled', t => {
   const bypasses = []
+  const crashes = []
   let combinations = 0
 
   for (const options of OPTION_SETS) {
     for (const mount of MOUNT_SPELLINGS) {
+      // The unrooted spelling is a mount variant; find-my-way requires the
+      // route itself to start with `/`.
+      const rootedMount = mount.charAt(0) === '/' ? mount : `/${mount}`
+
       for (const tail of ROUTE_TAILS) {
-        const routePath = mount + tail
+        const routePath = rootedMount + tail
+        const describe = target =>
+          `${JSON.stringify(options)} mount=${mount} route=${routePath} GET ${target}`
 
         let mountRan = false
         let routeRan = false
-        let router
 
-        try {
-          router = Router(() => {}, options)
-          router.use(mount, (req, res, next) => {
-            mountRan = true
-            next()
-          })
-          router.get(routePath, (req, res) => {
-            routeRan = true
-            res.end()
-          })
-        } catch {
-          continue
-        }
+        const router = Router(() => {}, options)
+        router.use(mount, (req, res, next) => {
+          mountRan = true
+          next()
+        })
+        router.get(routePath, (req, res) => {
+          routeRan = true
+          res.end()
+        })
 
         for (const mutate of REQUEST_MUTATORS) {
+          const target = mutate(routePath)
           mountRan = false
           routeRan = false
+          combinations++
 
+          // A throw is a finding, not a combination to skip: the router funnels
+          // middleware errors to finalhandler, so anything reaching here is a
+          // crash in normalization itself.
           try {
-            router({ method: 'GET', url: mutate(routePath) }, createResponse())
-          } catch {
+            router({ method: 'GET', url: target }, createResponse())
+          } catch (error) {
+            crashes.push(`${describe(target)} threw ${error.message}`)
             continue
           }
 
-          combinations++
-          if (routeRan && !mountRan) {
-            bypasses.push(
-              `${JSON.stringify(options)} mount=${mount} route=${routePath} GET ${mutate(routePath)}`
-            )
-          }
+          if (routeRan && !mountRan) bypasses.push(describe(target))
         }
       }
     }
   }
 
-  t.true(combinations > 4000)
+  t.is(combinations, EXPECTED_COMBINATIONS)
+  t.deepEqual(crashes, [])
   t.deepEqual(bypasses, [])
 })
 

@@ -16,7 +16,16 @@ const HTTP_METHODS = [
 ]
 
 const SLASH_CHAR_CODE = 47
+const QUESTION_MARK_CHAR_CODE = 63
+const HASH_CHAR_CODE = 35
+const SEMICOLON_CHAR_CODE = 59
 const SYNC_ITERATION_LIMIT = 100
+
+const EMPTY_HANDLERS = []
+
+const identity = value => value
+
+const earlierIndex = (a, b) => (a === -1 ? b : b === -1 || a < b ? a : b)
 
 const requiredFinalHandler = () => {
   throw new TypeError('You should to provide a final handler')
@@ -82,13 +91,13 @@ const toOriginForm = pathname =>
     ? pathname
     : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
 
-const mutateRequestUrl = (prefix, req) => {
-  const remainingUrl = req.url.substring(prefix.length)
+const mutateRequestUrl = (urlPrefixLength, pathPrefixLength, req) => {
+  const remainingUrl = req.url.substring(urlPrefixLength)
   req.url =
     remainingUrl.charCodeAt(0) === SLASH_CHAR_CODE
       ? remainingUrl
       : `/${remainingUrl}`
-  const remainingPath = req.path.substring(prefix.length)
+  const remainingPath = req.path.substring(pathPrefixLength)
   req.path = remainingPath || '/'
 }
 
@@ -110,17 +119,55 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const useSemicolonDelimiter = !!options.useSemicolonDelimiter
 
   const ignoreTrailingSlash = !!options.ignoreTrailingSlash
+  // Only these two make req.url and req.path diverge in the mount prefix.
   const rewritesUrl = ignoreDuplicateSlashes || ignoreTrailingSlash
 
-  const trimTrailingSlash = path =>
-    ignoreTrailingSlash ? FindMyWay.trimLastSlash(path) : path
+  const isPathEnd = charCode =>
+    charCode === QUESTION_MARK_CHAR_CODE ||
+    charCode === HASH_CHAR_CODE ||
+    (charCode === SEMICOLON_CHAR_CODE && useSemicolonDelimiter)
 
-  const normalizePath = path => {
-    const collapsed = ignoreDuplicateSlashes
-      ? FindMyWay.removeDuplicateSlashes(path)
-      : path
-    return trimTrailingSlash(collapsed)
+  // Where the mount's segments end in the raw url. Collapsed slashes leave the
+  // url longer than the path it normalized to, so the mount cannot be stripped
+  // by the path's prefix length without eating into the tail.
+  const getRawUrlPrefixEnd = (url, segmentCount) => {
+    const length = url.length
+    let count = 0
+    let i = 0
+
+    while (i < length) {
+      while (i < length && url.charCodeAt(i) === SLASH_CHAR_CODE) i++
+
+      while (i < length) {
+        const charCode = url.charCodeAt(i)
+        if (charCode === SLASH_CHAR_CODE) break
+        if (isPathEnd(charCode)) return i
+        i++
+      }
+
+      if (++count === segmentCount) return i
+    }
+
+    return length
   }
+
+  const collapseSlashes = ignoreDuplicateSlashes
+    ? FindMyWay.removeDuplicateSlashes
+    : identity
+  const trimTrailingSlash = ignoreTrailingSlash
+    ? FindMyWay.trimLastSlash
+    : identity
+  const normalizePath = path => trimTrailingSlash(collapseSlashes(path))
+
+  // The two sides of the mirror: a mount key that is not derived the same way
+  // as the lookup key stops matching a route find-my-way still resolves.
+  const normalizeMountKey = lowercaseMountPath
+    ? path => normalizeMountPath(collapseSlashes(path)).toLowerCase()
+    : path => normalizeMountPath(collapseSlashes(path))
+
+  const normalizeLookupKey = lowercaseLookupPath
+    ? pathname => decodePathname(pathname).toLowerCase()
+    : decodePathname
 
   // The path ends at the first `?`, `#`, or (opt-in) `;`, exactly where
   // find-my-way's safeDecodeURI stops. Normalization applies to that half
@@ -130,35 +177,28 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const questionIndex = originForm.indexOf('?', 1)
     const hashIndex = originForm.indexOf('#', 1)
 
-    let delimiterIndex = questionIndex
-    if (hashIndex !== -1 && (delimiterIndex === -1 || hashIndex < delimiterIndex)) {
-      delimiterIndex = hashIndex
-    }
+    let delimiterIndex = earlierIndex(questionIndex, hashIndex)
     if (useSemicolonDelimiter) {
-      const semicolonIndex = originForm.indexOf(';', 1)
-      if (
-        semicolonIndex !== -1 &&
-        (delimiterIndex === -1 || semicolonIndex < delimiterIndex)
-      ) {
-        delimiterIndex = semicolonIndex
-      }
+      delimiterIndex = earlierIndex(delimiterIndex, originForm.indexOf(';', 1))
     }
 
-    const rawPath =
+    const path = normalizePath(
       delimiterIndex === -1 ? originForm : originForm.substring(0, delimiterIndex)
-    const path = normalizePath(rawPath)
+    )
 
-    // A `?` after a `#` is fragment content, not a query string.
+    // The query is what sits between `?` and `#`. A `?` after a `#` is
+    // fragment content, and a `#` after a `?` ends the query.
     const hasQuery =
       questionIndex !== -1 && (hashIndex === -1 || questionIndex < hashIndex)
-    const search = hasQuery ? originForm.substring(questionIndex) : null
+    const search = hasQuery
+      ? originForm.substring(
+        questionIndex,
+        hashIndex === -1 ? originForm.length : hashIndex
+      )
+      : null
 
     return {
       path,
-      urlPath:
-        path === rawPath
-          ? originForm
-          : path + (delimiterIndex === -1 ? '' : originForm.substring(delimiterIndex)),
       query: search === null ? null : search.substring(1),
       search
     }
@@ -173,8 +213,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const matchPathMiddleware = pathname => {
     if (pathMountCount === 0) return undefined
 
-    let decoded = decodePathname(pathname)
-    if (lowercaseLookupPath) decoded = decoded.toLowerCase()
+    const decoded = normalizeLookupKey(pathname)
     const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
     if (candidates === undefined) return undefined
 
@@ -195,16 +234,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   const findRoute = (method, path, constraints) => {
     const result = router.find(method, path, constraints)
-    if (result === null) {
-      return { params: {}, handlers: [] }
-    }
+    if (result === null) return { params: {}, handlers: EMPTY_HANDLERS }
     // onBadUrl / onMaxParamLength are plain find-my-way handlers without
     // our `.handlers` wrapper; run them as a single middleware.
     const wrapped = result.handler.handlers
-    if (wrapped === undefined) {
-      return { params: result.params, handlers: [result.handler] }
+    return {
+      params: result.params,
+      handlers: wrapped === undefined ? [result.handler] : wrapped
     }
-    return { params: result.params, handlers: wrapped }
   }
 
   const registerRoute = (method, path, handlers) => {
@@ -264,8 +301,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       req.params = req.params || {}
     }
 
-    if (req.search === undefined) req.search = req.query || urlInfo.search
-    if (req.query === undefined) req.query = urlInfo.query
+    // Falsy rather than undefined: an outer router that parsed a url with no
+    // query stores null, and a handler may rewrite req.url before delegating.
+    req.search = req.search || req.query || urlInfo.search
+    req.query = req.query || urlInfo.query
 
     let index = 0
     let syncCount = 0
@@ -332,19 +371,19 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       for (let i = 0; i < middlewares.length; i++) {
         globalMiddlewares.push(middlewares[i])
       }
-    } else if (path === '/') {
+      return handler
+    }
+
+    // Normalize before deciding: `//` and `/` are the same mount, and only a
+    // mount that is not the root can strip a prefix.
+    const normalizedPath = normalizeMountKey(path)
+
+    if (normalizedPath === '/') {
       const middlewares = fns.filter(Boolean)
       for (let i = 0; i < middlewares.length; i++) {
         globalMiddlewares.push(middlewares[i])
       }
     } else {
-      // Mirror find-my-way's `on` normalization, the registration-side twin of
-      // the lookup normalization in parseUrl: a mount it does not collapse the
-      // same way stops matching a route find-my-way still resolves.
-      let normalizedPath = normalizeMountPath(
-        ignoreDuplicateSlashes ? FindMyWay.removeDuplicateSlashes(path) : path
-      )
-      if (lowercaseMountPath) normalizedPath = normalizedPath.toLowerCase()
       const middlewares = fns.filter(Boolean)
 
       if (middlewares.length > 0) {
@@ -356,21 +395,29 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           for (let i = 1; i < normalizedPath.length; i++) {
             if (normalizedPath.charCodeAt(i) === SLASH_CHAR_CODE) mountSegments++
           }
-          pathMiddlewares.push((req, _, next) => {
-            const reqPath = req.path
-            // Derived here rather than carried from the handler: a global
-            // middleware can divert before this runs, and state left on req
-            // would be consumed by whichever router strips a prefix next.
-            if (rewritesUrl || req.url.charCodeAt(0) !== SLASH_CHAR_CODE) {
-              const { urlPath } = parseUrl(req.url)
-              if (urlPath !== req.url) req.url = urlPath
-            }
-            // Case-insensitive mounts are stored lowercased; strip by segment
-            // count so the raw request casing (and encodings) stay intact.
-            mutateRequestUrl(
-              !lowercaseMountPath && reqPath.indexOf('%') === -1
+          // Case-insensitive mounts are stored lowercased, so their length no
+          // longer lines up with the raw path; strip by segment count instead,
+          // which also keeps request casing and encodings intact.
+          const resolveMountPrefix = lowercaseMountPath
+            ? reqPath => getRawMountPrefix(reqPath, mountSegments)
+            : reqPath =>
+              reqPath.indexOf('%') === -1
                 ? normalizedPath
-                : getRawMountPrefix(reqPath, mountSegments),
+                : getRawMountPrefix(reqPath, mountSegments)
+
+          pathMiddlewares.push((req, _, next) => {
+            const pathPrefixLength = resolveMountPrefix(req.path).length
+            // Only the mount's own segments are normalized away. Rewriting the
+            // whole url would push this router's options onto the tail, and a
+            // sub-router would stop seeing the target the client sent.
+            if (req.url.charCodeAt(0) !== SLASH_CHAR_CODE) {
+              req.url = toOriginForm(req.url)
+            }
+            mutateRequestUrl(
+              rewritesUrl
+                ? getRawUrlPrefixEnd(req.url, mountSegments)
+                : pathPrefixLength,
+              pathPrefixLength,
               req
             )
             next()

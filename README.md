@@ -174,9 +174,13 @@ The router adds these properties to `req`:
 
 `req.path` ends where find-my-way stops matching: at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). Absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded, where find-my-way matches on the decoded path.
 
-Everything after the first `?` is the query, unless a `#` came first — a `?` inside a fragment is fragment content, not a query string.
+The query is what sits between `?` and `#`. A `?` inside a fragment is fragment content, not a query string.
 
-`req.url` keeps the value the client sent, except under a matching `.use()` mount — that mount strips its own prefix, normalizing the target first when it differs from the wire value.
+`req.url` keeps the value the client sent, except under a matching `.use()` mount — that mount strips its own prefix. Only the prefix is normalized, so a sub-router still receives the tail exactly as it arrived.
+
+When several `.use()` mounts prefix the same path, only the longest one runs: `use('/admin', auth)` alongside `use('/admin/panel', log)` runs `log` and not `auth` for `/admin/panel/x`. Register the broad middleware globally, or on every mount that needs it.
+
+An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
 
 ### Print routes
 
