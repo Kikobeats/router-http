@@ -1347,6 +1347,22 @@ test('.use() still runs for a mount registered with a trailing slash', async t =
   t.is(denied.body, 'unauthorized')
 })
 
+test('a diverting router leaves no normalization state for the next one', async t => {
+  const diverting = Router(final, { ignoreDuplicateSlashes: true })
+  diverting.use((req, res, next) => next('router'))
+  diverting.use('/admin', (req, res, next) => next())
+  diverting.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const plain = Router(final)
+  plain.use('/admin', (req, res) => res.end(req.url))
+
+  const url = await runServer(t, (req, res) =>
+    diverting(req, res, () => plain(req, res))
+  )
+
+  t.is(await got(new URL('/admin//x', url).toString()), '//x')
+})
+
 test('respects a pre-set req.search', async t => {
   const router = Router(final)
 

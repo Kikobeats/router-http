@@ -82,14 +82,7 @@ const toOriginForm = pathname =>
     ? pathname
     : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
 
-const NORMALIZED_URL = Symbol('normalizedUrl')
-
 const mutateRequestUrl = (prefix, req) => {
-  const normalizedUrl = req[NORMALIZED_URL]
-  if (normalizedUrl !== undefined) {
-    req.url = normalizedUrl
-    req[NORMALIZED_URL] = undefined
-  }
   const remainingUrl = req.url.substring(prefix.length)
   req.url =
     remainingUrl.charCodeAt(0) === SLASH_CHAR_CODE
@@ -117,6 +110,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const useSemicolonDelimiter = !!options.useSemicolonDelimiter
 
   const ignoreTrailingSlash = !!options.ignoreTrailingSlash
+  const rewritesUrl = ignoreDuplicateSlashes || ignoreTrailingSlash
 
   const trimTrailingSlash = path =>
     ignoreTrailingSlash ? FindMyWay.trimLastSlash(path) : path
@@ -261,13 +255,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathMw = matchPathMiddleware(pathname)
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
-    // Handed to the mount's strip middleware rather than assigned here: a
-    // global middleware can divert with next('router') before the mount runs,
-    // and the parent must see the url the client actually sent.
-    if (pathMw !== undefined && urlInfo.urlPath !== req.url) {
-      req[NORMALIZED_URL] = urlInfo.urlPath
-    }
-
     if (routeHandlers !== null) {
       req.params =
         req.params !== undefined
@@ -371,6 +358,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           }
           pathMiddlewares.push((req, _, next) => {
             const reqPath = req.path
+            // Derived here rather than carried from the handler: a global
+            // middleware can divert before this runs, and state left on req
+            // would be consumed by whichever router strips a prefix next.
+            if (rewritesUrl || req.url.charCodeAt(0) !== SLASH_CHAR_CODE) {
+              const { urlPath } = parseUrl(req.url)
+              if (urlPath !== req.url) req.url = urlPath
+            }
             // Case-insensitive mounts are stored lowercased; strip by segment
             // count so the raw request casing (and encodings) stay intact.
             mutateRequestUrl(
