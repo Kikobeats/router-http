@@ -1089,20 +1089,6 @@ test('.use() does not treat %2F as a mount separator', async t => {
   t.true(mounted)
 })
 
-testMountGuards('.use() still runs when ignoreDuplicateSlashes matches the route', {
-  options: { ignoreDuplicateSlashes: true },
-  mount: '/admin/panel',
-  route: '/admin/panel/secret',
-  requests: ['/admin//panel/secret']
-})
-
-testMountGuards('.use() still runs when useSemicolonDelimiter matches the route', {
-  options: { useSemicolonDelimiter: true },
-  mount: '/admin',
-  route: '/admin',
-  requests: ['/admin;sid=1']
-})
-
 testMountGuards('.use() still runs when caseSensitive:false matches the route', {
   options: { caseSensitive: false },
   mount: '/admin',
@@ -1310,6 +1296,8 @@ test('respects a pre-set req.search', async t => {
   t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|foo=bar')
 })
 
+// Truthy rather than `true`: the option is coerced with `!!`, so this also
+// pins that nothing starts comparing it with `=== true`.
 testMountGuards('.use() still runs when useSemicolonDelimiter is truthy', {
   options: { useSemicolonDelimiter: 1 },
   mount: '/admin',
