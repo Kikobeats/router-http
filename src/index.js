@@ -282,31 +282,51 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
     // Falsy rather than undefined: an outer router that parsed a url with no
     // query stores null, and a handler may rewrite req.url before delegating.
-    req.search = req.search || req.query || urlInfo.search
+    req.search = req.search || urlInfo.search
     req.query = req.query || urlInfo.query
 
     const entryUrl = req.url
     const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl
+    req.baseUrl = entryBaseUrl
 
     const originUrl = mountCount > 0 ? toOriginForm(entryUrl) : entryUrl
 
+    const globalCount = globalMiddlewares.length
+
     let syncCount = 0
-    let stage = 0
+    let mountIndex = 0
+    let globalIndex = 0
+    let routeStarted = false
+    let frameEntered = false
+    let current = EMPTY_HANDLERS
     let cursor = 0
-    let current = globalMiddlewares
+    let limit = 0
+
+    const leaveFrame = () => {
+      frameEntered = false
+      req.url = entryUrl
+      req.path = pathname
+      req.baseUrl = entryBaseUrl
+    }
 
     // Both exits abandon the remaining middleware and undo the frame, so the
     // parent router and the error handler see what the client actually sent.
+    // Truthiness, not `!== undefined`: `next(null)` is the ordinary callback
+    // idiom for success and must not be read as a failure.
     const handleNext = err => {
-      if (err !== undefined) {
-        stage = mountCount + 1
-        cursor = 0
-        current = EMPTY_HANDLERS
-        if (mountCount > 0) {
-          req.url = entryUrl
-          req.path = pathname
-          req.baseUrl = entryBaseUrl
+      if (err) {
+        // 'route' abandons the rest of the current layer only.
+        if (err === 'route') {
+          cursor = limit
+          return executeLoop()
         }
+        mountIndex = mountCount
+        globalIndex = globalCount
+        routeStarted = true
+        cursor = 0
+        limit = 0
+        current = EMPTY_HANDLERS
+        if (frameEntered) leaveFrame()
         if (err !== 'router') return finalhandler(err, req, res, next)
         if (next !== undefined) return next()
         return executeLoop()
@@ -318,38 +338,56 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       executeLoop()
     }
 
-    // stage 0 is the global list, 1..mountCount are the mount frames, and
-    // mountCount + 1 is the route, which runs on the unstripped request. A
-    // mount sees the request rooted at itself; every frame is measured from
-    // the entry values, so mounts stay independent of each other.
+    // Globals and mount frames interleave by registration order, which is what
+    // `globalsBefore` records. Only a mount runs on a stripped request, so
+    // every other layer restores first: a global sitting between two mounts
+    // belongs to the router, not to whichever frame happened to precede it.
     const executeLoop = () => {
       if (res.writableEnded) return
 
-      while (cursor >= current.length) {
-        stage++
-        cursor = 0
-
-        if (stage <= mountCount) {
-          const mount = matchedMounts[stage - 1]
+      while (cursor >= limit) {
+        if (
+          mountIndex < mountCount &&
+          globalIndex >= matchedMounts[mountIndex].globalsBefore
+        ) {
+          const mount = matchedMounts[mountIndex++]
           const segments = mount.segments
           const urlPrefixEnd = getSegmentEnd(originUrl, segments)
           const prefix = originUrl.substring(0, urlPrefixEnd)
-          req.baseUrl = entryBaseUrl === '' ? prefix : entryBaseUrl + prefix
+          req.baseUrl = entryBaseUrl + prefix
           req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
           req.path =
             pathname.substring(getSegmentEnd(pathname, segments)) || '/'
+          frameEntered = true
           current = mount.mw
-        } else if (stage === mountCount + 1) {
-          if (mountCount > 0) {
-            req.url = entryUrl
-            req.path = pathname
-            req.baseUrl = entryBaseUrl
-          }
-          current = routeHandlers
-        } else {
-          if (next !== undefined) return next()
-          return finalhandler(undefined, req, res, handleNext)
+          cursor = 0
+          limit = mount.mw.length
+          continue
         }
+
+        if (globalIndex < globalCount) {
+          if (frameEntered) leaveFrame()
+          current = globalMiddlewares
+          cursor = globalIndex
+          globalIndex =
+            mountIndex < mountCount
+              ? matchedMounts[mountIndex].globalsBefore
+              : globalCount
+          limit = globalIndex
+          continue
+        }
+
+        if (!routeStarted) {
+          routeStarted = true
+          if (frameEntered) leaveFrame()
+          current = routeHandlers
+          cursor = 0
+          limit = routeHandlers.length
+          continue
+        }
+
+        if (next !== undefined) return next()
+        return finalhandler(undefined, req, res, handleNext)
       }
 
       const middleware = current[cursor++]
@@ -383,12 +421,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       soleBucket = bucketCount === 1 ? bucket : null
     }
 
-    const existing = bucket.find(mount => mount.path === mountPath)
-    if (existing !== undefined) return existing.mw
-
+    // One layer per `.use()` call rather than one per distinct path: appending
+    // to an earlier layer would run this middleware at that layer's position,
+    // ahead of anything registered in between.
     const mount = {
       path: mountPath,
       segments: countSegments(mountPath),
+      globalsBefore: globalMiddlewares.length,
       mw: [],
       solo: null
     }

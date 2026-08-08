@@ -182,11 +182,24 @@ test('respect req.search', async t => {
   router.get('/', (req, res) => res.end(req.search))
 
   const url = await runServer(t, (req, res) => {
-    req.query = '?foo=bar'
+    req.search = '?foo=bar'
     router(req, res)
   })
 
-  t.deepEqual(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
+  t.is(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
+})
+
+test('a pre-set req.query does not become req.search', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => res.end(`${req.query}|${req.search}`))
+
+  const url = await runServer(t, (req, res) => {
+    req.query = 'foo=bar'
+    router(req, res)
+  })
+
+  t.is(await got(new URL('/?foo=barz', url).toString()), 'foo=bar|?foo=barz')
 })
 
 test('`.all`', async t => {
@@ -1430,4 +1443,90 @@ test('a second router re-parses the query after req.url is rewritten', async t =
   )
 
   t.is(await got(new URL('/a', url).toString()), 'x=1')
+})
+
+test('re-registering a mount path keeps registration order', async t => {
+  const router = Router(final)
+  const ran = []
+  const mark = name => (req, res, next) => {
+    ran.push(name)
+    next()
+  }
+
+  router.use('/admin/panel', mark('audit'))
+  router.use('/admin', mark('authorize'))
+  router.use('/admin/panel', mark('log'))
+  router.get('/admin/panel/x', (req, res) => res.end(ran.join(' ')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/panel/x', url).toString()), 'audit authorize log')
+})
+
+test('a global registered after a mount runs after it', async t => {
+  const router = Router(final)
+  const ran = []
+  const mark = name => (req, res, next) => {
+    ran.push(name)
+    next()
+  }
+
+  router.use('/admin', mark('authorize'))
+  router.use(mark('logger'))
+  router.get('/admin/x', (req, res) => res.end(ran.join(' ')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), 'authorize logger')
+})
+
+test('a global between two mounts sees the unstripped request', async t => {
+  const router = Router(final)
+  const seen = []
+
+  router.use((req, res, next) => {
+    seen.push(`g1 ${req.url}`)
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    seen.push(`mount ${req.url}`)
+    next()
+  })
+  router.use((req, res, next) => {
+    seen.push(`g2 ${req.url}`)
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(seen.join(' | ')))
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/x', url).toString()),
+    'g1 /admin/x | mount /x | g2 /admin/x'
+  )
+})
+
+test('next(null) continues the chain', async t => {
+  const router = Router(final)
+
+  router.use((req, res, next) => next(null))
+  router.get('/a', (req, res) => res.end('route ok'))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a', url).toString()), 'route ok')
+})
+
+test("next('route') skips the rest of the current layer", async t => {
+  const router = Router(final)
+
+  router.get(
+    '/a',
+    (req, res, next) => next('route'),
+    (req, res) => res.end('skipped')
+  )
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a', url).toString()), 'Not Found')
 })
