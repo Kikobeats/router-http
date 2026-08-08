@@ -1,5 +1,6 @@
 'use strict'
 
+const NullProtoObj = require('null-prototype-object')
 const FindMyWay = require('find-my-way')
 
 const HTTP_METHODS = [
@@ -35,6 +36,16 @@ const requiredFinalHandler = () => {
 
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
+
+// Mounts bucket by first decoded segment. An empty first segment (`//admin`)
+// must still bucket to `/` for both mounts and request paths; returning the
+// whole path would put them in separate buckets that never meet.
+const getFirstPathSegment = pathname => {
+  const secondSlashIndex = pathname.indexOf('/', 1)
+  return secondSlashIndex === -1
+    ? pathname
+    : pathname.substring(0, secondSlashIndex)
+}
 
 const normalizeMountPath = path => {
   const withSlash = ensureLeadingSlash(path)
@@ -181,17 +192,28 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   const globalMiddlewares = []
-  // Registration order, the order Express runs its layers in. A flat scan beats
-  // bucketing by first segment: the bucket key is a fresh substring with no
-  // cached hash, so hashing it costs more than comparing every mount.
-  const mounts = []
+  // First decoded segment -> mounts under it, in registration order. Bucketing
+  // costs a substring plus a cold hash per request, which is more than scanning
+  // a handful of mounts; it only pays off once a router carries enough of them
+  // that the scan is the larger cost.
+  const mountsByFirstSegment = new NullProtoObj()
+  // While every mount shares one first segment there is nothing to
+  // discriminate, so the bucket key is not worth deriving.
+  let soleBucket = null
+  let bucketCount = 0
+  let mountCount = 0
 
   // Every mount that prefixes the path, not just the longest: each one gets its
   // own frame, the way Express runs every matching `app.use` layer.
   const matchMounts = pathname => {
-    if (mounts.length === 0) return EMPTY_MOUNTS
+    if (mountCount === 0) return EMPTY_MOUNTS
 
     const decoded = normalizeLookupKey(pathname)
+    const mounts =
+      soleBucket !== null
+        ? soleBucket
+        : mountsByFirstSegment[getFirstPathSegment(decoded)]
+    if (mounts === undefined) return EMPTY_MOUNTS
 
     // One match is the common case and reuses the mount's own single-element
     // array, so matching allocates nothing until mounts actually overlap.
@@ -352,7 +374,16 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // Segment count rather than key length: a lowercased or percent-encoded
   // request differs in bytes from the key it matched.
   const registerMount = mountPath => {
-    const existing = mounts.find(mount => mount.path === mountPath)
+    const segment = getFirstPathSegment(mountPath)
+    let bucket = mountsByFirstSegment[segment]
+    if (bucket === undefined) {
+      bucket = []
+      mountsByFirstSegment[segment] = bucket
+      bucketCount++
+      soleBucket = bucketCount === 1 ? bucket : null
+    }
+
+    const existing = bucket.find(mount => mount.path === mountPath)
     if (existing !== undefined) return existing.mw
 
     const mount = {
@@ -363,7 +394,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
     // Preallocated so a single match, the common case, allocates nothing.
     mount.solo = [mount]
-    mounts.push(mount)
+    bucket.push(mount)
+    mountCount++
 
     return mount.mw
   }

@@ -940,6 +940,28 @@ test('every matching .use() mount runs, in registration order', async t => {
   )
 })
 
+test('mounts under different first segments stay isolated', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    req.ran = 'admin'
+    next()
+  })
+  router.use('/shop', (req, res, next) => {
+    req.ran = 'shop'
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.ran}|${req.url}`))
+  router.get('/shop/x', (req, res) => res.end(`${req.ran}|${req.url}`))
+  router.get('/other/x', (req, res) => res.end(`${req.ran}|${req.url}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), 'admin|/admin/x')
+  t.is(await got(new URL('/shop/x', url).toString()), 'shop|/shop/x')
+  t.is(await got(new URL('/other/x', url).toString()), 'undefined|/other/x')
+})
+
 test('a shorter mount registered later still runs after the longer one', async t => {
   const router = Router(final)
 
