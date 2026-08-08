@@ -205,6 +205,18 @@ That is what makes `.use(path, subRouter)` work: the sub-router runs inside the 
 
 Only the mount's own prefix is removed, so a sub-router receives the tail as the client sent it — duplicate and trailing slashes included, even when this router is collapsing them. The one rewrite that survives into the tail is absolute-form: `GET http://example.com/v1/info` reaches a `/v1` sub-router as `/info`.
 
+Which mounts match is decided once, from the incoming target, before any middleware runs. A middleware that rewrites `req.url` still has its rewrite honoured — the frame strips from the rewritten value — but it cannot bring a new mount into play:
+
+```js
+router.use((req, res, next) => {
+  req.url = '/admin/x'
+  next()
+})
+router.use('/admin', authorize) // does not run for GET /other
+```
+
+This is the one place the router diverges from Express, which re-matches after every layer.
+
 > **Changed in 3.0.0.** Previously only the longest matching mount ran, and its prefix was stripped permanently — route handlers saw the shortened `req.path`. If you relied on that, read the prefix from `req.baseUrl` instead of reconstructing it, and expect `req.url` / `req.path` to be the full request inside route handlers. Middleware mounted with `.use()` is unaffected: it still sees the stripped view.
 
 An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
