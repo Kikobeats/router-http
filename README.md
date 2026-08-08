@@ -172,7 +172,9 @@ The router adds these properties to `req`:
 
 > `req.query` and `req.search` are only set if not already present.
 
-`req.path` mirrors the path find-my-way matched, so it is truncated at the first `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). When that normalization rewrites the target — an absolute-form request line such as `GET http://example.com/foo`, or a collapsed duplicate slash under `ignoreDuplicateSlashes` — `req.url` is rewritten to match. Read the wire value before the router runs if you need to log it verbatim.
+`req.path` mirrors the path find-my-way matched: it ends at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled), absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. `req.query` and `req.search` split at that same delimiter, so they can never disagree with `req.path` about where the path ends.
+
+`req.url` keeps the value the client sent, except under a matching `.use()` mount — that mount strips its own prefix, and normalizes the target first when it differs from the wire value.
 
 ### Print routes
 

@@ -1229,13 +1229,61 @@ test('.use() still runs for absolute-form request targets', async t => {
 test('absolute-form request targets keep the query string', async t => {
   const router = Router(final)
 
-  router.get('/hello', (req, res) => res.end(`${req.url}|${req.query}`))
+  router.get('/hello', (req, res) => res.end(`${req.path}|${req.query}`))
 
   const url = await runServer(t, router)
   const res = await rawRequest(url, `http://${url.host}/hello?name=kiko`)
 
   t.is(res.statusCode, 200)
-  t.is(res.body, '/hello?name=kiko|name=kiko')
+  t.is(res.body, '/hello|name=kiko')
+})
+
+test('req.url is untouched when no mount matches', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.get('/hello', (req, res) => res.end(req.url))
+
+  const url = await runServer(t, (req, res) =>
+    router(req, res, () => res.end(`downstream:${req.url}`))
+  )
+
+  t.is(await got(new URL('/a//b', url).toString()), 'downstream:/a//b')
+  t.is(await got(new URL('/hello', url).toString()), '/hello')
+})
+
+test('req.query stops at the same delimiter as req.path', async t => {
+  const router = Router(final)
+
+  router.get('/api/user', (req, res) => res.end(`${req.path}|${req.query}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/api/user#?admin=true')
+
+  t.is(res.body, '/api/user|?admin=true')
+})
+
+test('req.path mirrors ignoreTrailingSlash', async t => {
+  const router = Router(final, { ignoreTrailingSlash: true })
+
+  router.get('/admin', (req, res) => res.end(req.path))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/', url).toString()), '/admin')
+  t.is(await got(new URL('/admin', url).toString()), '/admin')
+})
+
+test('respects a pre-set req.search', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => res.end(`${req.search}|${req.query}`))
+
+  const url = await runServer(t, (req, res) => {
+    req.search = '?kept=1'
+    router(req, res)
+  })
+
+  t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|foo=bar')
 })
 
 test('.use() still runs when useSemicolonDelimiter is truthy', async t => {

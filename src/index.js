@@ -43,6 +43,9 @@ const normalizeMountPath = path => {
 
 // decodeURI (not decodeURIComponent): leave %2F encoded so it cannot invent
 // path segments and desync mount match from raw segment stripping.
+// Differs from find-my-way's safeDecodeURI on %25, which it re-encodes to
+// survive decoding. Unreachable: find-my-way matches no route whose path
+// contains %25, so no route under such a mount can run either.
 const decodePathname = pathname => {
   if (pathname.indexOf('%') === -1) return pathname
   try {
@@ -68,6 +71,10 @@ const getRawMountPrefix = (pathname, segmentCount) => {
   return pathname
 }
 
+const QUESTION_MARK_CHAR_CODE = 63
+const HASH_CHAR_CODE = 35
+const SEMICOLON_CHAR_CODE = 59
+
 // RFC 7230 §5.3.2 absolute-form targets; same rewrite find-my-way applies.
 const ABSOLUTE_FORM_REGEXP = /^https?:\/\/.*?\//
 
@@ -75,19 +82,6 @@ const toOriginForm = pathname =>
   pathname.charCodeAt(0) === SLASH_CHAR_CODE
     ? pathname
     : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
-
-const parseUrl = ({ url }) => {
-  const queryIndex = url.indexOf('?', 1)
-  if (queryIndex === -1) {
-    return { pathname: url, query: null, search: null }
-  }
-  const search = url.substring(queryIndex)
-  return {
-    pathname: url.substring(0, queryIndex),
-    query: search.substring(1),
-    search
-  }
-}
 
 const mutateRequestUrl = (prefix, req) => {
   const remainingUrl = req.url.substring(prefix.length)
@@ -116,19 +110,45 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const ignoreDuplicateSlashes = !!options.ignoreDuplicateSlashes
   const useSemicolonDelimiter = !!options.useSemicolonDelimiter
 
+  const ignoreTrailingSlash = !!options.ignoreTrailingSlash
+
+  // Same single scan find-my-way's safeDecodeURI runs: the path ends at the
+  // first of these, so query and path can never disagree on where it stops.
   const findPathDelimiter = urlPath => {
-    const hashIndex = urlPath.indexOf('#', 1)
-    if (!useSemicolonDelimiter) return hashIndex
-    const semicolonIndex = urlPath.indexOf(';', 1)
-    if (hashIndex === -1) return semicolonIndex
-    return semicolonIndex === -1 ? hashIndex : Math.min(hashIndex, semicolonIndex)
+    for (let i = 1; i < urlPath.length; i++) {
+      const charCode = urlPath.charCodeAt(i)
+      if (
+        charCode === QUESTION_MARK_CHAR_CODE ||
+        charCode === HASH_CHAR_CODE ||
+        (charCode === SEMICOLON_CHAR_CODE && useSemicolonDelimiter)
+      ) {
+        return i
+      }
+    }
+    return -1
   }
 
-  const normalizeUrlPath = pathname => {
-    const originForm = toOriginForm(pathname)
-    return ignoreDuplicateSlashes
+  const trimTrailingSlash = path =>
+    ignoreTrailingSlash ? FindMyWay.trimLastSlash(path) : path
+
+  const parseUrl = url => {
+    const originForm = toOriginForm(url)
+    const urlPath = ignoreDuplicateSlashes
       ? FindMyWay.removeDuplicateSlashes(originForm)
       : originForm
+
+    const delimiterIndex = findPathDelimiter(urlPath)
+    if (delimiterIndex === -1) {
+      return { path: trimTrailingSlash(urlPath), urlPath, query: null, search: null }
+    }
+
+    const search = urlPath.substring(delimiterIndex)
+    return {
+      path: trimTrailingSlash(urlPath.substring(0, delimiterIndex)),
+      urlPath,
+      query: search.substring(1),
+      search
+    }
   }
 
   const globalMiddlewares = []
@@ -207,18 +227,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   const handler = (req, res, next) => {
-    const urlInfo = parseUrl(req)
-    const urlPath = normalizeUrlPath(urlInfo.pathname)
-    const delimiterIndex = findPathDelimiter(urlPath)
-    const pathname =
-      delimiterIndex === -1 ? urlPath : urlPath.substring(0, delimiterIndex)
+    const urlInfo = parseUrl(req.url)
+    const pathname = urlInfo.path
 
     req.path = pathname
-    // Keep req.url aligned with the path find-my-way matched so mount
-    // stripping cannot desync after absolute-form / duplicate-slash rewriting.
-    if (urlPath !== urlInfo.pathname) {
-      req.url = urlInfo.search === null ? urlPath : urlPath + urlInfo.search
-    }
 
     let route = findRoute(req.method, pathname)
 
@@ -230,6 +242,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathMw = matchPathMiddleware(pathname)
     const routeHandlers = route.handlers.length > 0 ? route.handlers : null
 
+    // Only the mount middleware strips a prefix off req.url, so only it needs
+    // req.url realigned with the normalized path. Rewriting unconditionally
+    // would hand a rewritten url to a parent router we never matched for.
+    if (pathMw !== undefined && urlInfo.urlPath !== req.url) {
+      req.url = urlInfo.urlPath
+    }
+
     if (routeHandlers !== null) {
       req.params =
         req.params !== undefined
@@ -239,8 +258,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       req.params = req.params || {}
     }
 
-    req.search = req.query || urlInfo.search
-    req.query = req.query || urlInfo.query
+    if (req.search === undefined) req.search = req.query || urlInfo.search
+    if (req.query === undefined) req.query = urlInfo.query
 
     let index = 0
     let syncCount = 0
