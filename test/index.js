@@ -1121,12 +1121,24 @@ test('onBadUrl handler does not crash the request', async t => {
 
   router.get('/hello/:name', (req, res) => res.end(req.params.name))
 
-  const url = await runServer(t, router)
-  const res = await got(new URL('/hello/%world', url).toString(), {
-    resolveBodyOnly: false
+  const server = createServer(router)
+  const url = await listen(server)
+  t.teardown(() => server.close())
+
+  // invalid % encoding; use raw http to avoid got's URL validation
+  const path = '/hello/%world'
+  const res = await new Promise(resolve => {
+    require('http').get(`${url.origin}${path}`, resolve)
+  })
+  const body = await new Promise(resolve => {
+    let data = ''
+    res.on('data', chunk => {
+      data += chunk
+    })
+    res.on('end', () => resolve(data))
   })
   t.is(res.statusCode, 400)
-  t.is(res.body, 'bad:/hello/%world')
+  t.is(body, 'bad:/hello/%world')
 })
 
 test('onMaxParamLength handler does not crash the request', async t => {
