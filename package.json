@@ -29,8 +29,7 @@
     "routes"
   ],
   "dependencies": {
-    "find-my-way": "~9.7.0",
-    "null-prototype-object": "~1.2.5"
+    "find-my-way": "~9.7.0"
   },
   "devDependencies": {
     "@commitlint/cli": "latest",

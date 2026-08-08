@@ -1,6 +1,5 @@
 'use strict'
 
-const NullProtoObj = require('null-prototype-object')
 const FindMyWay = require('find-my-way')
 
 const HTTP_METHODS = [
@@ -15,6 +14,8 @@ const HTTP_METHODS = [
   'connect'
 ]
 
+const ALL_METHODS = HTTP_METHODS.map(method => method.toUpperCase())
+
 const SLASH_CHAR_CODE = 47
 const QUESTION_MARK_CHAR_CODE = 63
 const HASH_CHAR_CODE = 35
@@ -22,6 +23,7 @@ const SEMICOLON_CHAR_CODE = 59
 const SYNC_ITERATION_LIMIT = 100
 
 const EMPTY_HANDLERS = []
+const EMPTY_MOUNTS = []
 
 const identity = value => value
 
@@ -34,23 +36,13 @@ const requiredFinalHandler = () => {
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
-// An empty first segment (`//admin`) must still bucket to `/` for both mounts
-// and request paths; returning the whole path would put them in separate
-// buckets that never meet.
-const getFirstPathSegment = pathname => {
-  const secondSlashIndex = pathname.indexOf('/', 1)
-  return secondSlashIndex === -1
-    ? pathname
-    : pathname.substring(0, secondSlashIndex)
-}
-
 const normalizeMountPath = path => {
   const withSlash = ensureLeadingSlash(path)
   let end = withSlash.length
   while (end > 1 && withSlash.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
     end--
   }
-  return end === withSlash.length ? withSlash : withSlash.substring(0, end)
+  return withSlash.substring(0, end)
 }
 
 // decodeURI (not decodeURIComponent): leave %2F encoded so it cannot invent
@@ -189,27 +181,24 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   const globalMiddlewares = []
-  const middlewaresByPath = new NullProtoObj()
-  // First decoded segment → mounts under that segment, in registration order.
-  const mountsByFirstSegment = new NullProtoObj()
-  const EMPTY_MOUNTS = []
-  let pathMountCount = 0
+  // Registration order, the order Express runs its layers in. A flat scan beats
+  // bucketing by first segment: the bucket key is a fresh substring with no
+  // cached hash, so hashing it costs more than comparing every mount.
+  const mounts = []
 
   // Every mount that prefixes the path, not just the longest: each one gets its
   // own frame, the way Express runs every matching `app.use` layer.
   const matchMounts = pathname => {
-    if (pathMountCount === 0) return EMPTY_MOUNTS
+    if (mounts.length === 0) return EMPTY_MOUNTS
 
     const decoded = normalizeLookupKey(pathname)
-    const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
-    if (candidates === undefined) return EMPTY_MOUNTS
 
     // One match is the common case and reuses the mount's own single-element
     // array, so matching allocates nothing until mounts actually overlap.
     let first
     let matched
-    for (let i = 0; i < candidates.length; i++) {
-      const mountPath = candidates[i].path
+    for (let i = 0; i < mounts.length; i++) {
+      const mountPath = mounts[i].path
       const mountLen = mountPath.length
       if (
         decoded === mountPath ||
@@ -217,10 +206,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           decoded.charCodeAt(mountLen) === SLASH_CHAR_CODE &&
           decoded.startsWith(mountPath))
       ) {
-        if (first === undefined) first = candidates[i]
+        if (first === undefined) first = mounts[i]
         else {
           if (matched === undefined) matched = [first]
-          matched.push(candidates[i])
+          matched.push(mounts[i])
         }
       }
     }
@@ -229,33 +218,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     return first === undefined ? EMPTY_MOUNTS : first.solo
   }
 
-  const findRoute = (method, path, constraints) => {
-    const result = router.find(method, path, constraints)
-    if (result === null) return { params: {}, handlers: EMPTY_HANDLERS }
-    // onBadUrl / onMaxParamLength are plain find-my-way handlers without
-    // our `.handlers` wrapper; run them as a single middleware.
-    const wrapped = result.handler.handlers
-    return {
-      params: result.params,
-      handlers: wrapped === undefined ? [result.handler] : wrapped
-    }
-  }
-
-  const registerRoute = (method, path, handlers) => {
-    const routeHandler = () => {}
-    routeHandler.handlers = handlers
-    router.on(method, path, routeHandler)
-  }
-
-  const addRoute = (method, path, ...handlers) => {
+  const addRoute = (methods, path, ...handlers) => {
     const fns = handlers.flat().filter(Boolean)
     if (fns.length === 0) return handler
 
-    const methods = method === '' ? HTTP_METHODS : [method]
-
-    for (let i = 0; i < methods.length; i++) {
-      registerRoute(methods[i].toUpperCase(), path, fns)
-    }
+    const routeHandler = () => {}
+    routeHandler.handlers = fns
+    router.on(methods, path, routeHandler)
 
     return handler
   }
@@ -267,21 +236,24 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     req.path = pathname
     if (req.originalUrl === undefined) req.originalUrl = req.url
 
-    let route = findRoute(req.method, pathname)
-
-    if (route.handlers.length === 0 && req.method === 'HEAD') {
-      route = findRoute('GET', pathname)
+    let match = router.find(req.method, pathname)
+    if (match === null && req.method === 'HEAD') {
+      match = router.find('GET', pathname)
     }
 
-    const mounts = matchMounts(pathname)
-    const mountCount = mounts.length
-    const routeHandlers = route.handlers
+    const matchedMounts = matchMounts(pathname)
+    const mountCount = matchedMounts.length
+    let routeHandlers = EMPTY_HANDLERS
 
-    if (routeHandlers.length > 0) {
+    if (match !== null) {
+      // onBadUrl / onMaxParamLength are plain find-my-way handlers without our
+      // `.handlers` wrapper; run them as a single middleware.
+      const wrapped = match.handler.handlers
+      routeHandlers = wrapped === undefined ? [match.handler] : wrapped
       req.params =
         req.params !== undefined
-          ? { ...req.params, ...route.params }
-          : route.params
+          ? { ...req.params, ...match.params }
+          : match.params
     } else {
       req.params = req.params || {}
     }
@@ -336,7 +308,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         cursor = 0
 
         if (stage <= mountCount) {
-          const mount = mounts[stage - 1]
+          const mount = matchedMounts[stage - 1]
           const segments = mount.segments
           const urlPrefixEnd = getSegmentEnd(originUrl, segments)
           const prefix = originUrl.substring(0, urlPrefixEnd)
@@ -377,70 +349,51 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     executeLoop()
   }
 
-  handler.use = (path = '/', ...fns) => {
-    if (typeof path === 'function' || typeof path === 'boolean') {
-      const middlewares = [path, ...fns].filter(Boolean)
-      for (let i = 0; i < middlewares.length; i++) {
-        globalMiddlewares.push(middlewares[i])
-      }
-      return handler
+  // Segment count rather than key length: a lowercased or percent-encoded
+  // request differs in bytes from the key it matched.
+  const registerMount = mountPath => {
+    const existing = mounts.find(mount => mount.path === mountPath)
+    if (existing !== undefined) return existing.mw
+
+    const mount = {
+      path: mountPath,
+      segments: countSegments(mountPath),
+      mw: [],
+      solo: null
     }
+    // Preallocated so a single match, the common case, allocates nothing.
+    mount.solo = [mount]
+    mounts.push(mount)
+
+    return mount.mw
+  }
+
+  handler.use = (path = '/', ...fns) => {
+    const pathIsMiddleware =
+      typeof path === 'function' || typeof path === 'boolean'
+    const middlewares = (pathIsMiddleware ? [path, ...fns] : fns).filter(Boolean)
+    if (middlewares.length === 0) return handler
 
     // Normalize before deciding: `//` and `/` are the same mount, and only a
     // mount that is not the root can strip a prefix.
-    const normalizedPath = normalizeMountKey(path)
+    const mountPath = pathIsMiddleware ? '/' : normalizeMountKey(path)
+    const target =
+      mountPath === '/' ? globalMiddlewares : registerMount(mountPath)
 
-    if (normalizedPath === '/') {
-      const middlewares = fns.filter(Boolean)
-      for (let i = 0; i < middlewares.length; i++) {
-        globalMiddlewares.push(middlewares[i])
-      }
-    } else {
-      const middlewares = fns.filter(Boolean)
-
-      if (middlewares.length > 0) {
-        let pathMiddlewares = middlewaresByPath[normalizedPath]
-
-        if (pathMiddlewares === undefined) {
-          pathMiddlewares = []
-          middlewaresByPath[normalizedPath] = pathMiddlewares
-          pathMountCount++
-
-          const segment = getFirstPathSegment(normalizedPath)
-          let candidates = mountsByFirstSegment[segment]
-          if (candidates === undefined) {
-            candidates = []
-            mountsByFirstSegment[segment] = candidates
-          }
-          // Registration order, the order Express runs its layers in. Segment
-          // count rather than key length: a lowercased or percent-encoded
-          // request differs in bytes from the key it matched.
-          const mount = {
-            path: normalizedPath,
-            segments: countSegments(normalizedPath),
-            mw: pathMiddlewares,
-            solo: null
-          }
-          mount.solo = [mount]
-          candidates.push(mount)
-        }
-
-        for (let i = 0; i < middlewares.length; i++) {
-          pathMiddlewares.push(middlewares[i])
-        }
-      }
+    for (let i = 0; i < middlewares.length; i++) {
+      target.push(middlewares[i])
     }
+
     return handler
   }
 
-  handler.all = addRoute.bind(null, '')
+  handler.all = addRoute.bind(null, ALL_METHODS)
 
   for (let i = 0; i < HTTP_METHODS.length; i++) {
-    const method = HTTP_METHODS[i]
-    handler[method] = addRoute.bind(null, method)
+    handler[HTTP_METHODS[i]] = addRoute.bind(null, [ALL_METHODS[i]])
   }
 
-  handler.prettyPrint = (...args) => router.prettyPrint(...args)
+  handler.prettyPrint = router.prettyPrint.bind(router)
 
   Object.defineProperty(handler, 'routes', {
     get: () => router.routes,
