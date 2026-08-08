@@ -68,6 +68,14 @@ const getRawMountPrefix = (pathname, segmentCount) => {
   return pathname
 }
 
+// RFC 7230 §5.3.2 absolute-form targets; same rewrite find-my-way applies.
+const ABSOLUTE_FORM_REGEXP = /^https?:\/\/.*?\//
+
+const toOriginForm = pathname =>
+  pathname.charCodeAt(0) === SLASH_CHAR_CODE
+    ? pathname
+    : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
+
 const parseUrl = ({ url }) => {
   const queryIndex = url.indexOf('?', 1)
   if (queryIndex === -1) {
@@ -81,13 +89,12 @@ const parseUrl = ({ url }) => {
   }
 }
 
-const QUESTION_MARK_CHAR_CODE = 63
-
 const mutateRequestUrl = (prefix, req) => {
   const remainingUrl = req.url.substring(prefix.length)
-  req.url = !remainingUrl || remainingUrl.charCodeAt(0) === QUESTION_MARK_CHAR_CODE
-    ? `/${remainingUrl}`
-    : remainingUrl
+  req.url =
+    remainingUrl.charCodeAt(0) === SLASH_CHAR_CODE
+      ? remainingUrl
+      : `/${remainingUrl}`
   const remainingPath = req.path.substring(prefix.length)
   req.path = remainingPath || '/'
 }
@@ -100,24 +107,28 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   // Mirror find-my-way lookup normalization so .use() mounts cannot be skipped
   // after the router still matches a route (auth bypass).
-  const caseSensitive = options.caseSensitive !== false
-  const ignoreDuplicateSlashes = options.ignoreDuplicateSlashes === true
-  const useSemicolonDelimiter = options.useSemicolonDelimiter === true
+  const caseSensitive =
+    options.caseSensitive === undefined ? true : options.caseSensitive
+  // find-my-way lowercases stored routes on `!caseSensitive` but lowercases the
+  // lookup path on `caseSensitive === false`; mirror each side separately.
+  const lowercaseMountPath = !caseSensitive
+  const lowercaseLookupPath = caseSensitive === false
+  const ignoreDuplicateSlashes = !!options.ignoreDuplicateSlashes
+  const useSemicolonDelimiter = !!options.useSemicolonDelimiter
 
-  const normalizeRequestPath = pathname => {
-    let path = pathname
-    let semicolonSearch = null
-    if (ignoreDuplicateSlashes) {
-      path = FindMyWay.removeDuplicateSlashes(path)
-    }
-    if (useSemicolonDelimiter) {
-      const semi = path.indexOf(';')
-      if (semi !== -1) {
-        semicolonSearch = path.substring(semi)
-        path = semi === 0 ? '/' : path.substring(0, semi)
-      }
-    }
-    return { path, semicolonSearch }
+  const findPathDelimiter = urlPath => {
+    const hashIndex = urlPath.indexOf('#', 1)
+    if (!useSemicolonDelimiter) return hashIndex
+    const semicolonIndex = urlPath.indexOf(';', 1)
+    if (hashIndex === -1) return semicolonIndex
+    return semicolonIndex === -1 ? hashIndex : Math.min(hashIndex, semicolonIndex)
+  }
+
+  const normalizeUrlPath = pathname => {
+    const originForm = toOriginForm(pathname)
+    return ignoreDuplicateSlashes
+      ? FindMyWay.removeDuplicateSlashes(originForm)
+      : originForm
   }
 
   const globalMiddlewares = []
@@ -130,7 +141,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     if (pathMountCount === 0) return undefined
 
     let decoded = decodePathname(pathname)
-    if (!caseSensitive) decoded = decoded.toLowerCase()
+    if (lowercaseLookupPath) decoded = decoded.toLowerCase()
     const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
     if (candidates === undefined) return undefined
 
@@ -197,14 +208,16 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
   const handler = (req, res, next) => {
     const urlInfo = parseUrl(req)
-    const { path: pathname, semicolonSearch } = normalizeRequestPath(
-      urlInfo.pathname
-    )
+    const urlPath = normalizeUrlPath(urlInfo.pathname)
+    const delimiterIndex = findPathDelimiter(urlPath)
+    const pathname =
+      delimiterIndex === -1 ? urlPath : urlPath.substring(0, delimiterIndex)
+
     req.path = pathname
     // Keep req.url aligned with the path find-my-way matched so mount
-    // stripping cannot desync after duplicate-slash / semicolon normalization.
-    if (pathname !== urlInfo.pathname) {
-      req.url = pathname + (semicolonSearch || '') + (urlInfo.search || '')
+    // stripping cannot desync after absolute-form / duplicate-slash rewriting.
+    if (urlPath !== urlInfo.pathname) {
+      req.url = urlInfo.search === null ? urlPath : urlPath + urlInfo.search
     }
 
     let route = findRoute(req.method, pathname)
@@ -301,7 +314,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       }
     } else {
       let normalizedPath = normalizeMountPath(path)
-      if (!caseSensitive) normalizedPath = normalizedPath.toLowerCase()
+      if (lowercaseMountPath) normalizedPath = normalizedPath.toLowerCase()
       const middlewares = fns.filter(Boolean)
 
       if (middlewares.length > 0) {
@@ -318,7 +331,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
             // Case-insensitive mounts are stored lowercased; strip by segment
             // count so the raw request casing (and encodings) stay intact.
             mutateRequestUrl(
-              caseSensitive && reqPath.indexOf('%') === -1
+              !lowercaseMountPath && reqPath.indexOf('%') === -1
                 ? normalizedPath
                 : getRawMountPrefix(reqPath, mountSegments),
               req

@@ -1159,3 +1159,149 @@ test('onMaxParamLength handler does not crash the request', async t => {
   t.is(res.statusCode, 414)
   t.is(res.body, 'long:/hello/abcd')
 })
+
+// got/http.get normalize the request target; only a raw socket can send
+// fragments and absolute-form targets on the wire.
+const rawRequest = (url, target, headers = {}) =>
+  new Promise((resolve, reject) => {
+    const socket = require('net').connect(Number(url.port), url.hostname, () => {
+      const lines = Object.keys(headers).map(key => `${key}: ${headers[key]}\r\n`)
+      socket.write(`GET ${target} HTTP/1.0\r\nHost: ${url.host}\r\n${lines.join('')}\r\n`)
+    })
+    let raw = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      raw += chunk
+    })
+    socket.on('error', reject)
+    socket.on('end', () => {
+      const separator = raw.indexOf('\r\n\r\n')
+      resolve({
+        statusCode: Number(raw.substring(9, 12)),
+        body: raw.substring(separator + 4)
+      })
+    })
+  })
+
+const authorize = (req, res, next) => {
+  if (req.headers.authorization !== 'secret') {
+    res.statusCode = 401
+    return res.end('unauthorized')
+  }
+  next()
+}
+
+test('.use() still runs when a fragment truncates the route path', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.get('/admin', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await rawRequest(url, '/admin#x')
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  const allowed = await rawRequest(url, '/admin#x', { authorization: 'secret' })
+  t.is(allowed.statusCode, 200)
+  t.is(allowed.body, 'secret data')
+})
+
+test('.use() still runs for absolute-form request targets', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.get('/admin/secret', (req, res) => res.end(`${req.path}|${req.url}`))
+
+  const url = await runServer(t, router)
+  const target = `http://${url.host}/admin/secret`
+
+  const denied = await rawRequest(url, target)
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  const allowed = await rawRequest(url, target, { authorization: 'secret' })
+  t.is(allowed.statusCode, 200)
+  t.is(allowed.body, '/secret|/secret')
+})
+
+test('absolute-form request targets keep the query string', async t => {
+  const router = Router(final)
+
+  router.get('/hello', (req, res) => res.end(`${req.url}|${req.query}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, `http://${url.host}/hello?name=kiko`)
+
+  t.is(res.statusCode, 200)
+  t.is(res.body, '/hello?name=kiko|name=kiko')
+})
+
+test('.use() still runs when useSemicolonDelimiter is truthy', async t => {
+  const router = Router(final, { useSemicolonDelimiter: 1 })
+
+  router.use('/admin', authorize)
+  router.get('/admin', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/admin;sid=1', url).toString(), {
+    resolveBodyOnly: false
+  })
+
+  t.is(res.statusCode, 401)
+  t.is(res.body, 'unauthorized')
+})
+
+test('.use() still runs when ignoreDuplicateSlashes is truthy', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: 1 })
+
+  router.use('/admin/panel', authorize)
+  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/admin//panel/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+
+  t.is(res.statusCode, 401)
+  t.is(res.body, 'unauthorized')
+})
+
+test('.use() still runs when caseSensitive is a falsy non-boolean', async t => {
+  const router = Router(final, { caseSensitive: 0 })
+
+  router.use('/Admin', authorize)
+  router.get('/Admin/secret', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/admin/secret', url).toString(), {
+    resolveBodyOnly: false
+  })
+
+  t.is(res.statusCode, 401)
+  t.is(res.body, 'unauthorized')
+})
+
+test('.use() keeps a leading slash when stripping a semicolon path', async t => {
+  const router = Router(final, { useSemicolonDelimiter: true })
+
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin;sid=1', url).toString()), '/;sid=1|/')
+})
+
+test('.use() keeps a leading slash when stripping a fragment path', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/admin#x')
+
+  t.is(res.body, '/#x|/')
+})

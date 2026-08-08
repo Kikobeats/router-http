@@ -172,6 +172,8 @@ The router adds these properties to `req`:
 
 > `req.query` and `req.search` are only set if not already present.
 
+`req.path` mirrors the path find-my-way matched, so it is truncated at the first `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). When that normalization rewrites the target — an absolute-form request line such as `GET http://example.com/foo`, or a collapsed duplicate slash under `ignoreDuplicateSlashes` — `req.url` is rewritten to match. Read the wire value before the router runs if you need to log it verbatim.
+
 ### Print routes
 
 You can visualize your router's routes in a readable tree format using the `router.prettyPrint()` method. This is especially helpful for debugging or understanding your route structure at a glance.
