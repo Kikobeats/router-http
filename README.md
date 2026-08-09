@@ -165,10 +165,10 @@ The router adds these properties to `req`:
 | `req.params` | Route parameters object |
 | `req.query` | Raw query string (after `?`) |
 | `req.search` | Raw search string (including `?`) |
-| `req.baseUrl` | Mount prefix, while a mounted middleware runs |
+| `req.baseUrl` | Mount prefix while a mounted middleware runs, `''` elsewhere |
 | `req.originalUrl` | The request target as the client sent it |
 
-> `req.query` and `req.search` are set together, and only if neither is already present. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
+> `req.query` and `req.search` are set together, and only if neither already holds a value. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
 
 `req.path` ends where find-my-way stops matching: at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). Absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded, where find-my-way matches on the decoded path.
 
@@ -216,7 +216,7 @@ router.use((req, res, next) => {
 router.use('/admin', authorize) // does not run for GET /other
 ```
 
-This is the one place the router diverges from Express, which re-matches after every layer.
+This is one of two deliberate differences from Express, which re-matches after every layer. The other is percent-encoded mounts, below.
 
 > **Fixed.** The mount prefix used to be stripped permanently, so a route handler saw a `req.path` that had nothing to do with the path its route was registered and matched against: `.get('/admin/:id')` handling `/admin/42` reported `req.path` as `/42` while `req.params.id` was `42`. Adding an unrelated `.use('/admin')` was enough to change what `req.path` meant inside a route handler. The strip is now scoped to the mount that needs it. If you were reading the stripped prefix in a route handler, it is in `req.baseUrl`.
 
@@ -235,7 +235,7 @@ Middleware behaviour is checked against [`router`](https://github.com/pillarjs/r
 - a `req.url` rewritten before a mount survives the frame
 - trailing-slash and exact mount matches, query strings, and falling through to the parent
 
-One deliberate difference: a mount registered decoded matches a percent-encoded request.
+The second deliberate difference, after match-once above: a mount registered decoded matches a percent-encoded request.
 
 ```js
 router.use('/café', authorize)
@@ -266,7 +266,7 @@ console.log(router.prettyPrint())
 http.createServer(router).listen(3000)
 ```
 
-The printed output shows the nested structure of your routes along with their registered HTTP methods. This works for both flat and deeply nested routers, including those mounted via `.use()`.
+The printed output shows the nested structure of your routes along with their registered HTTP methods. It covers the routes registered on this router only — a sub-router mounted with `.use()` holds its own routing table and prints its own tree. The `routes` getter has the same scope.
 
 See more in [find-my-way prettyPrint documentation](https://github.com/delvedor/find-my-way#routerprettyprint).
 
