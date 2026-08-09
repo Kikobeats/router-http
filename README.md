@@ -165,7 +165,7 @@ The router adds these properties to `req`:
 | `req.params` | Route parameters object |
 | `req.query` | Raw query string (after `?`) |
 | `req.search` | Raw search string (including `?`) |
-| `req.baseUrl` | Mount prefix while a mounted middleware runs, `''` elsewhere |
+| `req.baseUrl` | Mount prefix while a mounted middleware runs; the inherited prefix otherwise, `''` at the top level |
 | `req.originalUrl` | The request target as the client sent it |
 
 > `req.query` and `req.search` are set together, and only if neither already holds a value. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
@@ -228,7 +228,7 @@ Middleware behaviour is checked against [`router`](https://github.com/pillarjs/r
 
 - every mount whose prefix matches runs, in registration order
 - re-registering the same mount path keeps its position in that order
-- a global registered after a mount runs after it, and sees the unstripped request
+- a global registered after a mount runs after it
 - a mount sees `req.url` stripped and `req.baseUrl` set; the route handler sees neither
 - `req.baseUrl` accumulates through nested routers, and `req.originalUrl` is the target the client sent
 - `next(null)` continues; `next('route')` from middleware continues to the next layer

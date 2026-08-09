@@ -152,7 +152,6 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
 
           if (
             mountRan &&
-            stripped !== undefined &&
             !stripsConsistently(options, stripped.url, stripped.path)
           ) {
             desyncs.push(

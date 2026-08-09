@@ -111,8 +111,9 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     : identity
   const normalizePath = path => trimTrailingSlash(collapseSlashes(path))
 
-  // The two sides of the mirror: a mount key that is not derived the same way
-  // as the lookup key stops matching a route find-my-way still resolves.
+  // Mount keys carry the whole normalization; lookup keys only decode, because
+  // parseUrl has already collapsed and trimmed the path by the time
+  // matchMounts compares them.
   const normalizeMountKey = lowercaseMountPath
     ? path => normalizeMountPath(collapseSlashes(path)).toLowerCase()
     : path => normalizeMountPath(collapseSlashes(path))
@@ -156,6 +157,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
   }
 
+  // The same terminator set parseUrl splits on, spelled per character because
+  // this one scans. Two encodings of one fact: change either and change both.
   const isPathEnd = charCode =>
     charCode === QUESTION_MARK_CHAR_CODE ||
     charCode === HASH_CHAR_CODE ||
@@ -194,9 +197,9 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // earns its keep at scale: scanning every mount instead measured +12.8% at 8
   // mounts and +223% at 128, against a request hitting the last one.
   const mountsByFirstSegment = new NullProtoObj()
-  // Deriving the bucket key costs a substring and a cold hash, which is the
-  // whole cost the scan was avoiding. While every mount shares one first
-  // segment there is nothing to discriminate, so skip it and scan that bucket.
+  // Deriving the bucket key costs a substring and a cold hash. While every
+  // mount shares one first segment there is nothing to discriminate, so skip it
+  // and scan that bucket: -19.3% for the single-mount router, and never worse.
   let soleBucket = null
   // The most recently registered mount, for the consecutive-same-path case.
   let lastMount = null
@@ -289,7 +292,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       req.search = urlInfo.search
     }
 
-    const entryUrl = req.url
     const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl
     req.baseUrl = entryBaseUrl
 
@@ -297,7 +299,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     // reinstating a snapshot and discarding whatever middleware wrote since.
     let framePrefix = ''
     let frameUrl = ''
-    let frameSourceUrl = entryUrl
+    let frameSourceUrl = req.url
     let frameSourcePath = pathname
 
     const globalCount = globalMiddlewares.length
@@ -311,6 +313,9 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     let cursor = 0
     let limit = 0
 
+    // Extracted while frame entry stays inline in the loop: this one is called
+    // from four places, entry from one, and a second closure per request costs
+    // more than the duplication would.
     const leaveFrame = () => {
       frameEntered = false
       req.baseUrl = entryBaseUrl
@@ -445,14 +450,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   const registerMount = mountPath => {
-    const segment = getFirstPathSegment(mountPath)
-    let bucket = mountsByFirstSegment[segment]
-    if (bucket === undefined) {
-      bucket = []
-      mountsByFirstSegment[segment] = bucket
-      soleBucket = mountCount === 0 ? bucket : null
-    }
-
     // One layer per `.use()` call rather than one per distinct path: appending
     // to an earlier layer would run this middleware at that layer's position,
     // ahead of anything registered in between.
@@ -464,6 +461,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       lastMount.globalsBefore === globalMiddlewares.length
     ) {
       return lastMount.mw
+    }
+
+    const segment = getFirstPathSegment(mountPath)
+    let bucket = mountsByFirstSegment[segment]
+    if (bucket === undefined) {
+      bucket = []
+      mountsByFirstSegment[segment] = bucket
+      soleBucket = mountCount === 0 ? bucket : null
     }
 
     const mount = {

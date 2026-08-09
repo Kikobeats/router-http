@@ -191,7 +191,7 @@ for (const testCase of SHARED_BEHAVIOUR) {
   })
 }
 
-// The one deliberate divergence. find-my-way matches routes on the decoded
+// The second deliberate divergence, after match-once. find-my-way matches routes on the decoded
 // path, so mounts are matched decoded too; matching them literally would let
 // the route run with its mount skipped, which for an auth mount is a bypass.
 const ENCODED_MOUNT = {
