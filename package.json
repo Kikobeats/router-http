@@ -44,6 +44,7 @@
     "github-generate-release": "latest",
     "got": "11",
     "nano-staged": "latest",
+    "router": "2.2.0",
     "simple-git-hooks": "latest",
     "standard": "latest",
     "standard-version": "latest"
