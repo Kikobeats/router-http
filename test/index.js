@@ -131,7 +131,7 @@ test('final handler is required', t => {
   t.is(error.message, 'You should to provide a final handler')
 })
 
-test('hide internals', async t => {
+test('hide internals', t => {
   const router = Router(final)
   t.falsy(router.add)
 })
@@ -1063,14 +1063,12 @@ test('.use() does not treat %2F as a mount separator', async t => {
 
   const url = await runServer(t, router)
 
-  mounted = false
   const encoded = await got(new URL('/admin%2Fpanel/secret', url).toString(), {
     resolveBodyOnly: false
   })
   t.is(encoded.statusCode, 404)
   t.false(mounted, 'encoded slash must not match /admin/panel mount')
 
-  mounted = false
   t.is(await got(new URL('/admin/panel/secret', url).toString()), 'panel')
   t.true(mounted)
 })
