@@ -14,6 +14,7 @@
   - [Advanced](#advanced)
     - [Request object](#request-object)
     - [Mounted middleware](#mounted-middleware)
+    - [Express compatibility](#express-compatibility)
     - [Print routes](#print-routes)
     - [Nested routers](#nested-routers)
     - [Skipping to parent router](#skipping-to-parent-router)
@@ -220,6 +221,32 @@ This is the one place the router diverges from Express, which re-matches after e
 > **Changed in 3.0.0.** Previously only the longest matching mount ran, and its prefix was stripped permanently — route handlers saw the shortened `req.path`. If you relied on that, read the prefix from `req.baseUrl` instead of reconstructing it, and expect `req.url` / `req.path` to be the full request inside route handlers. Middleware mounted with `.use()` is unaffected: it still sees the stripped view.
 
 An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
+
+### Express compatibility
+
+Middleware behaviour is checked against [`router`](https://github.com/pillarjs/router), the router Express itself uses, by running the same cases through both and comparing the middleware trace and the response. These match:
+
+- every mount whose prefix matches runs, in registration order
+- re-registering the same mount path keeps its position in that order
+- a global registered after a mount runs after it, and sees the unstripped request
+- a mount sees `req.url` stripped and `req.baseUrl` set; the route handler sees neither
+- `req.baseUrl` accumulates through nested routers, and `req.originalUrl` is the target the client sent
+- `next(null)` continues; `next('route')` from middleware continues to the next layer
+- a `req.url` rewritten before a mount survives the frame
+- trailing-slash and exact mount matches, query strings, and falling through to the parent
+
+One deliberate difference: a mount registered decoded matches a percent-encoded request.
+
+```js
+router.use('/café', authorize)
+router.get('/café/secret', handler)
+
+// GET /caf%C3%A9/secret
+// pillarjs/router: neither the mount nor the route matches
+// router-http:     both match, so authorize runs
+```
+
+find-my-way matches routes on the decoded path, so mounts have to be matched the same way. Matching them literally would let the route run with its mount skipped, which for an auth mount is a bypass.
 
 ### Print routes
 
