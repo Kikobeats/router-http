@@ -479,8 +479,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   }
 
   handler.use = (path = '/', ...fns) => {
-    const pathIsMiddleware =
-      typeof path !== 'string'
+    const pathIsMiddleware = typeof path !== 'string'
     const middlewares = (pathIsMiddleware ? [path, ...fns] : fns).filter(Boolean)
     if (middlewares.length === 0) return handler
 
