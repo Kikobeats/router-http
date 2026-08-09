@@ -14,37 +14,57 @@ cd "$(dirname "$0")/.."
 
 DURATION="${1:-30s}"
 ROUNDS="${2:-3}"
-TARGET="http://127.0.0.1:3000/user/123"
 SERVERS=(express polka http-router)
+
+# Not a fixed port: the servers default to 3000, which is whatever else the
+# machine happens to be running. Binding one at random and asking the kernel
+# for its number keeps a benchmark run from colliding with a dev server.
+PORT=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+TARGET="http://127.0.0.1:$PORT/user/123"
+
+listeners () { lsof -ti:"$PORT" 2>/dev/null | wc -l | tr -d ' '; }
 
 wait_for_port () {
   local want=$1 i=0 open
   while [ $i -lt 100 ]; do
-    open=$(lsof -ti:3000 2>/dev/null | wc -l | tr -d ' ')
+    open=$(listeners)
     [ "$want" = open ] && [ "$open" != 0 ] && return 0
     [ "$want" = free ] && [ "$open" = 0 ] && return 0
     sleep 0.1
     i=$((i + 1))
   done
-  echo "timed out waiting for port 3000 to be $want" >&2
+  echo "timed out waiting for port $PORT to be $want" >&2
   return 1
 }
 
 measure () {
   wait_for_port free || return 1
-  node "benchmark/$1.js" >/dev/null 2>&1 &
+
+  PORT="$PORT" node "benchmark/$1.js" >/dev/null 2>&1 &
   local pid=$! out
-  wait_for_port open || return 1
+
+  # Every exit from here on goes through stop, including the one where the
+  # server never came up: a listener left holding the port would fail the next
+  # round's free check, or worse, quietly answer its load.
+  stop () {
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+  }
+
+  if ! wait_for_port open; then
+    echo "$1 did not start; skipping" >&2
+    stop
+    return 1
+  fi
 
   wrk -t8 -c100 -d5s "$TARGET" >/dev/null 2>&1
   out=$(wrk -t8 -c100 -d"$DURATION" "$TARGET")
 
-  kill "$pid" 2>/dev/null
-  wait "$pid" 2>/dev/null
+  stop
   echo "$out"
 }
 
-echo "node $(node -v) · $(wrk --version 2>&1 | head -1 | cut -d' ' -f1-2) -t8 -c100 -d$DURATION · $ROUNDS rounds · load $(uptime | sed 's/.*averages: //')"
+echo "node $(node -v) · $(wrk --version 2>&1 | head -1 | cut -d' ' -f1-2) -t8 -c100 -d$DURATION · $ROUNDS rounds · port $PORT · load $(uptime | sed 's/.*averages: //')"
 echo
 
 declare -A best

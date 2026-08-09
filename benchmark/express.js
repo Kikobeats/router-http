@@ -17,4 +17,4 @@ express()
   .get('/user/:id', (req, res) => {
     res.end(`User: ${req.params.id}`)
   })
-  .listen(3000)
+  .listen(process.env.PORT || 3000)
