@@ -25,7 +25,7 @@
 
 A middleware-style router similar to [express router](https://github.com/pillarjs/router), with key advantages:
 
-- **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a trie-based router with constant O(1) lookup time.
+- **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a radix-trie router whose lookup cost tracks the path length rather than the number of routes.
 - **Battle-tested** – Well maintained with comprehensive test coverage.
 - **Lightweight** – Only 2 kB (minified + gzipped)
 
@@ -218,7 +218,7 @@ router.use('/admin', authorize) // does not run for GET /other
 
 This is one of two deliberate differences from Express, which re-matches after every layer. The other is percent-encoded mounts, below.
 
-> **Fixed.** The mount prefix used to be stripped permanently, so a route handler saw a `req.path` that had nothing to do with the path its route was registered and matched against: `.get('/admin/:id')` handling `/admin/42` reported `req.path` as `/42` while `req.params.id` was `42`. Adding an unrelated `.use('/admin')` was enough to change what `req.path` meant inside a route handler. The strip is now scoped to the mount that needs it. If you were reading the stripped prefix in a route handler, it is in `req.baseUrl`.
+> **Changed in 3.0.0.** The mount prefix used to be stripped permanently, so route handlers saw the shortened path too. If you were reading that stripped prefix in a route handler, it is now in `req.baseUrl`.
 
 An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
 
@@ -325,7 +325,7 @@ router.get('/v1/feature', (req, res) => res.end('Stable feature'))
 
 ## Benchmark
 
-With all the improvements, **router-http** is approximately 30% faster than the express router:
+Measured with `wrk -t8 -c100 -d30s` against the servers in [benchmark](/benchmark), **router-http** handles about 27% more requests per second than the express router:
 
 **express@5.2.1**
 

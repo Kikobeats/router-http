@@ -21,8 +21,7 @@ const final = (err, req, res) => {
   res.end(err ? err.message : 'Not Found')
 }
 
-const closeServer = server =>
-  require('util').promisify(server.close.bind(server))()
+const closeServer = server => new Promise(resolve => server.close(resolve))
 
 const runServer = async (t, handler) => {
   const server = createServer(handler)

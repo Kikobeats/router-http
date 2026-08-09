@@ -336,7 +336,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     // idiom for success and must not be read as a failure.
     const handleNext = err => {
       if (err) {
-        // 'route' abandons the rest of the current layer only.
         // Express only lets 'route' skip a route's own handler stack; from
         // middleware it continues to the next layer like a plain next().
         if (err === 'route') {
@@ -480,7 +479,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       mw: [],
       solo: null
     }
-    // Preallocated so a single match, the common case, allocates nothing.
     mount.solo = [mount]
     bucket.push(mount)
     lastMount = mount
