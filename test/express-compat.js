@@ -1,12 +1,10 @@
 'use strict'
 
-const { default: listen } = require('async-listen')
-const { createServer } = require('http')
 const ExpressRouter = require('router')
 const test = require('ava').default
 
 const Router = require('..')
-const { got, createTracker } = require('./_helpers')
+const { got, createTracker, runServer } = require('./_helpers')
 
 // Behaviour is compared against the router Express itself uses by running the
 // same case through both and diffing the middleware trace and the response.
@@ -23,25 +21,20 @@ const createRouter = () =>
     res.end(String(error.message || error))
   })
 
-const runCase = async (createRouterUnderTest, testCase) => {
+const runCase = async (t, createRouterUnderTest, testCase) => {
   const { ran: trace, mark: track } = createTracker()
 
   const router = createRouterUnderTest()
   testCase.build(router, track, createRouterUnderTest)
 
-  const server = createServer((req, res) =>
+  const url = await runServer(t, (req, res) =>
     router(req, res, () => {
       if (!res.writableEnded) res.end('DONE')
     })
   )
-  const url = await listen(server, { host: '127.0.0.1', port: 0 })
 
-  try {
-    const body = await got(`${url.origin}${testCase.url}`)
-    return `[${trace.join(' ')}] ${body}`
-  } finally {
-    await new Promise(resolve => server.close(resolve))
-  }
+  const body = await got(`${url.origin}${testCase.url}`)
+  return `[${trace.join(' ')}] ${body}`
 }
 
 const SHARED_BEHAVIOUR = [
@@ -177,8 +170,8 @@ const SHARED_BEHAVIOUR = [
 
 for (const testCase of SHARED_BEHAVIOUR) {
   test(`matches express: ${testCase.name}`, async t => {
-    const expected = await runCase(ExpressRouter, testCase)
-    const actual = await runCase(createRouter, testCase)
+    const expected = await runCase(t, ExpressRouter, testCase)
+    const actual = await runCase(t, createRouter, testCase)
     t.is(actual, expected)
   })
 }
@@ -196,8 +189,8 @@ const ENCODED_MOUNT = {
 }
 
 test('a decoded mount matches a percent-encoded request', async t => {
-  const express = await runCase(ExpressRouter, ENCODED_MOUNT)
-  const ours = await runCase(createRouter, ENCODED_MOUNT)
+  const express = await runCase(t, ExpressRouter, ENCODED_MOUNT)
+  const ours = await runCase(t, createRouter, ENCODED_MOUNT)
 
   t.is(express, '[] DONE', 'express matches neither the mount nor the route')
   t.is(ours, '[authorize] END', 'both match, so the mount still guards')

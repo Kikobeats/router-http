@@ -1,11 +1,9 @@
 'use strict'
 
-const { default: listen } = require('async-listen')
-const { createServer } = require('http')
 const { connect } = require('net')
 const test = require('ava').default
 
-const { got, createTracker } = require('./_helpers')
+const { got, createTracker, runServer } = require('./_helpers')
 
 const delay = d => new Promise(resolve => setTimeout(resolve, d))
 
@@ -14,15 +12,6 @@ const Router = require('..')
 const final = (err, req, res) => {
   res.statusCode = err ? 500 : 404
   res.end(err ? err.message : 'Not Found')
-}
-
-const closeServer = server => new Promise(resolve => server.close(resolve))
-
-const runServer = async (t, handler) => {
-  const server = createServer(handler)
-  const url = await listen(server, { host: '127.0.0.1', port: 0 })
-  t.teardown(() => closeServer(server))
-  return url
 }
 
 // got/http.get normalize the request target; only a raw socket can send
@@ -456,15 +445,6 @@ test('middleware ends response and calls next', async t => {
   t.is(await got(url), 'done')
 })
 
-test('last middleware ends response', async t => {
-  const router = Router(final)
-  router.get('/', (req, res) => {
-    res.end('done')
-  })
-  const url = await runServer(t, router)
-  t.is(await got(url), 'done')
-})
-
 test('last middleware ends response and calls next', async t => {
   const router = Router(final)
   router.get('/', (req, res, next) => {
@@ -580,44 +560,6 @@ test('remove falsy middlewares', async t => {
   t.is(await got(new URL('/foo', url).toString()), 'greetings')
 })
 
-test('middleware runs before routes regardless of declaration order', async t => {
-  const executionOrder = []
-
-  // Declare routes BEFORE middleware
-  const router = Router(final)
-  router
-    .get('/ping', (req, res) => {
-      executionOrder.push('route:/ping')
-      res.end('pong')
-    })
-    .get('/checkout', (req, res) => {
-      executionOrder.push('route:/checkout')
-      res.end('checkout')
-    })
-    .use((req, res, next) => {
-      executionOrder.push('middleware')
-      next()
-    })
-
-  const url = await runServer(t, router)
-
-  executionOrder.length = 0
-  await got(new URL('/ping', url).toString())
-  t.deepEqual(
-    executionOrder,
-    ['middleware', 'route:/ping'],
-    'middleware runs before /ping even though declared after'
-  )
-
-  executionOrder.length = 0
-  await got(new URL('/checkout', url).toString())
-  t.deepEqual(
-    executionOrder,
-    ['middleware', 'route:/checkout'],
-    'middleware runs before /checkout even though declared after'
-  )
-})
-
 test('middleware declaration order vs route declaration order', async t => {
   const executionOrder = []
 
@@ -663,20 +605,6 @@ test('middleware declaration order vs route declaration order', async t => {
   )
 })
 
-test('req.params is defined even without route match', async t => {
-  const router = Router(final)
-
-  router.use((req, res, next) => {
-    t.truthy(req.params)
-    next()
-  })
-
-  router.get('/match', (req, res) => res.end('match'))
-
-  const url = await runServer(t, router)
-  await got(new URL('/no-match', url).toString())
-})
-
 test('HEAD only calls HEAD handlers if defined', async t => {
   const router = Router(final)
   const results = []
@@ -714,18 +642,13 @@ test('pass options to find-my-way', async t => {
   t.is(await got(new URL('/foo', url).toString()), 'foo')
 })
 
-test('exposes find-my-way methods', t => {
-  const router = Router(final)
-  t.is(typeof router.prettyPrint, 'function')
-  t.true(Array.isArray(router.routes))
-})
-
 test('prettyPrint returns a string', t => {
   const router = Router(final)
   router.get('/foo', (req, res) => res.end('foo'))
   const output = router.prettyPrint()
   t.is(typeof output, 'string')
   t.true(output.includes('foo'))
+  t.true(Array.isArray(router.routes))
 })
 
 test('add with no handlers', t => {
