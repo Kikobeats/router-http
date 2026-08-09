@@ -218,7 +218,7 @@ router.use('/admin', authorize) // does not run for GET /other
 
 This is the one place the router diverges from Express, which re-matches after every layer.
 
-> **Changed in 3.0.0.** Previously only the longest matching mount ran, and its prefix was stripped permanently — route handlers saw the shortened `req.path`. If you relied on that, read the prefix from `req.baseUrl` instead of reconstructing it, and expect `req.url` / `req.path` to be the full request inside route handlers. Middleware mounted with `.use()` is unaffected: it still sees the stripped view.
+> **Fixed.** The mount prefix used to be stripped permanently, so a route handler saw a `req.path` that had nothing to do with the path its route was registered and matched against: `.get('/admin/:id')` handling `/admin/42` reported `req.path` as `/42` while `req.params.id` was `42`. Adding an unrelated `.use('/admin')` was enough to change what `req.path` meant inside a route handler. The strip is now scoped to the mount that needs it. If you were reading the stripped prefix in a route handler, it is in `req.baseUrl`.
 
 An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
 
