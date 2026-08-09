@@ -170,6 +170,8 @@ The router adds these properties to `req`:
 
 > `req.query` and `req.search` are set together, and only if neither already holds a value. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
 
+An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
+
 `req.path` ends where find-my-way stops matching: at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). Absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded, where find-my-way matches on the decoded path.
 
 The query is what sits between `?` and `#`. A `?` inside a fragment is fragment content, not a query string.
@@ -218,9 +220,7 @@ router.use('/admin', authorize) // does not run for GET /other
 
 This is one of two deliberate differences from Express, which re-matches after every layer. The other is percent-encoded mounts, below.
 
-> **Changed in 3.0.0.** The mount prefix used to be stripped permanently, so route handlers saw the shortened path too. If you were reading that stripped prefix in a route handler, it is now in `req.baseUrl`.
-
-An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
+> **Changed in 3.0.0.** Two things moved. The mount prefix used to be stripped permanently, so route handlers saw the shortened path too — if you were reading that prefix in a route handler, it is now in `req.baseUrl`. And only the longest matching mount used to run; now every mount whose prefix matches does, in registration order, so a request under `/admin/panel` runs an `/admin` mount as well.
 
 ### Express compatibility
 

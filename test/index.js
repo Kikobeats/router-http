@@ -53,13 +53,6 @@ const rawRequest = (url, target, headers = {}) =>
     })
   })
 
-// Leaves errors to the default 500 so a test can assert the 404 path alone.
-const notFound = (err, req, res) => {
-  if (err) return
-  res.statusCode = 404
-  res.end('Not Found')
-}
-
 // Records which layers ran, in order, so a test can assert the sequence.
 const createTracker = () => {
   const ran = []
@@ -793,7 +786,7 @@ test('a single-method route registers once', t => {
 })
 
 test('handles bad URLs (invalid encoding)', async t => {
-  const router = Router(notFound)
+  const router = Router(final)
 
   router.get('/hello', (req, res) => {
     res.end('hello')
@@ -808,7 +801,7 @@ test('handles bad URLs (invalid encoding)', async t => {
 })
 
 test('matches static routes with encoded characters', async t => {
-  const router = Router(notFound)
+  const router = Router(final)
 
   router.get('/hello world', (req, res) => {
     res.end('found')
@@ -821,7 +814,7 @@ test('matches static routes with encoded characters', async t => {
 })
 
 test('decodes parameters in path', async t => {
-  const router = Router(notFound)
+  const router = Router(final)
 
   router.get('/greetings/:name', (req, res) => {
     res.end(`Hello, ${req.params.name}`)

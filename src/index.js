@@ -47,7 +47,7 @@ const getFirstPathSegment = pathname => {
     : pathname.substring(0, secondSlashIndex)
 }
 
-const trimTrailingSlashes = path => {
+const toMountPath = path => {
   const withSlash = ensureLeadingSlash(path)
   let end = withSlash.length
   while (end > 1 && withSlash.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
@@ -87,10 +87,9 @@ const toOriginForm = pathname =>
     : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
 
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
-  const router = FindMyWay({
-    ...options,
-    defaultRoute: (req, res) => finalhandler(undefined, req, res)
-  })
+  // No defaultRoute: it only fires through find-my-way's lookup(), which this
+  // router never calls. An unmatched path is handled where the match is read.
+  const router = FindMyWay(options)
 
   // Mirror find-my-way lookup normalization so .use() mounts cannot be skipped
   // after the router still matches a route (auth bypass).
@@ -115,8 +114,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // parseUrl has already collapsed and trimmed the path by the time
   // matchMounts compares them.
   const normalizeMountKey = lowercaseMountPath
-    ? path => trimTrailingSlashes(collapseSlashes(path)).toLowerCase()
-    : path => trimTrailingSlashes(collapseSlashes(path))
+    ? path => toMountPath(collapseSlashes(path)).toLowerCase()
+    : path => toMountPath(collapseSlashes(path))
 
   const normalizeLookupKey = lowercaseLookupPath
     ? pathname => decodePathname(pathname).toLowerCase()
@@ -201,16 +200,16 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // mount shares one first segment there is nothing to discriminate, so skip it
   // and scan that bucket: -19.3% for the single-mount router, and never worse.
   let soleBucket = null
-  // The most recently registered mount. Letting consecutive `.use()` calls on
-  // the same path share a layer keeps the single-match path allocation-free:
-  // without it, `use('/api', a); use('/api', b)` costs +24%, and +71% at four.
+  // The most recently registered mount, and the flag for whether any exists.
+  // Letting consecutive `.use()` calls on the same path share a layer keeps the
+  // single-match path allocation-free: without it, `use('/api', a);
+  // use('/api', b)` costs +24%, and +71% at four.
   let lastMount = null
-  let mountCount = 0
 
   // Every mount that prefixes the path, not just the longest: each one gets its
   // own frame, the way Express runs every matching `app.use` layer.
   const matchMounts = pathname => {
-    if (mountCount === 0) return EMPTY_MOUNTS
+    if (lastMount === null) return EMPTY_MOUNTS
 
     const decoded = normalizeLookupKey(pathname)
     const mounts =
@@ -280,8 +279,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         req.params !== undefined
           ? { ...req.params, ...match.params }
           : match.params
-    } else {
-      req.params = req.params || {}
+    } else if (req.params === undefined) {
+      req.params = {}
     }
 
     // One decision for the pair, not two: setting them independently lets a
@@ -315,9 +314,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     let cursor = 0
     let limit = 0
 
-    // Extracted while frame entry stays inline in the loop: this one is called
-    // from four places, entry from one, and a second closure per request costs
-    // more than the duplication would.
+    // Extracted because four layer transitions undo a frame; entry has one site
+    // and stays inline.
     const leaveFrame = () => {
       frameEntered = false
       req.baseUrl = entryBaseUrl
@@ -347,7 +345,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         mountIndex = matchedCount
         globalIndex = globalCount
         routeStarted = true
-        cursor = 0
         limit = 0
         if (frameEntered) leaveFrame()
         if (err !== 'router') return finalhandler(err, req, res, next)
@@ -469,7 +466,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     if (bucket === undefined) {
       bucket = []
       mountsByFirstSegment[segment] = bucket
-      soleBucket = mountCount === 0 ? bucket : null
+      soleBucket = lastMount === null ? bucket : null
     }
 
     const mount = {
@@ -484,7 +481,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     mount.solo = [mount]
     bucket.push(mount)
     lastMount = mount
-    mountCount++
 
     return mount.mw
   }
