@@ -77,7 +77,7 @@ const router = createRouter(finalHandler, {
 
 ### Declaring routes
 
-Use HTTP verb methods to define your routes:
+Use HTTP verb methods to define your routes. Every method returns the router, so `.get()`, `.post()` and `.use()` chain in any combination:
 
 ```js
 router
@@ -96,14 +96,14 @@ router.all('/ping', (req, res) => res.end('pong'))
 The dynamic segments will be captured using the `:param` syntax, with parameters accessible via `req.params`:
 
 ```js
-router.get('/users/:id', (req, res) => {
-  res.end(`User ID: ${req.params.id}`)
-})
-
-router.get('/posts/:year/:month', (req, res) => {
-  const { year, month } = req.params
-  res.end(`Posts from ${month}/${year}`)
-})
+router
+  .get('/users/:id', (req, res) => {
+    res.end(`User ID: ${req.params.id}`)
+  })
+  .get('/posts/:year/:month', (req, res) => {
+    const { year, month } = req.params
+    res.end(`Posts from ${month}/${year}`)
+  })
 ```
 
 See [Request object](#request-object) for details on how to access route parameters and other useful properties added to `req`.
@@ -177,9 +177,10 @@ The router adds these properties to `req`:
 Every mount whose prefix matches runs, in registration order — not just the longest one:
 
 ```js
-router.use('/admin', authorize)
-router.use('/admin/panel', audit)
-router.get('/admin/panel/secret', handler)
+router
+  .use('/admin', authorize)
+  .use('/admin/panel', audit)
+  .get('/admin/panel/secret', handler)
 
 // GET /admin/panel/secret runs authorize, then audit, then handler
 ```
@@ -187,15 +188,16 @@ router.get('/admin/panel/secret', handler)
 While a mount runs, the request is rooted at that mount: `req.url` and `req.path` have the prefix removed and `req.baseUrl` holds it. The frame is undone afterwards, so the route handler sees the full request:
 
 ```js
-router.use('/admin', (req, res, next) => {
-  req.baseUrl // '/admin'
-  req.url     // '/panel/secret'
-  next()
-})
-router.get('/admin/panel/secret', (req, res) => {
-  req.baseUrl // ''
-  req.url     // '/admin/panel/secret'
-})
+router
+  .use('/admin', (req, res, next) => {
+    req.baseUrl // '/admin'
+    req.url     // '/panel/secret'
+    next()
+  })
+  .get('/admin/panel/secret', (req, res) => {
+    req.baseUrl // ''
+    req.url     // '/admin/panel/secret'
+  })
 ```
 
 That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and the tail keeps the slashes the client sent — duplicates and trailing included, even when this router is collapsing them.
@@ -270,8 +272,9 @@ beta.use((req, res, next) => {
 
 beta.get('/feature', (req, res) => res.end('Beta feature'))
 
-router.use('/v1', beta)
-router.get('/v1/feature', (req, res) => res.end('Stable feature'))
+router
+  .use('/v1', beta)
+  .get('/v1/feature', (req, res) => res.end('Stable feature'))
 ```
 
 ## Benchmark
