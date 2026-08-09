@@ -1,9 +1,16 @@
 'use strict'
 
 const { default: listen } = require('async-listen')
-const { createServer, get: httpGet } = require('http')
+const { createServer } = require('http')
 const ExpressRouter = require('router')
 const test = require('ava').default
+
+const got = require('got').extend({
+  retry: 0,
+  responseType: 'text',
+  throwHttpErrors: false,
+  resolveBodyOnly: true
+})
 
 const Router = require('..')
 
@@ -37,15 +44,7 @@ const runCase = async (createRouterUnderTest, testCase) => {
   const url = await listen(server, { host: '127.0.0.1', port: 0 })
 
   try {
-    const body = await new Promise((resolve, reject) => {
-      httpGet(`${url.origin}${testCase.url}`, res => {
-        let data = ''
-        res.on('data', chunk => {
-          data += chunk
-        })
-        res.on('end', () => resolve(data))
-      }).on('error', reject)
-    })
+    const body = await got(`${url.origin}${testCase.url}`)
     return `[${trace.join(' ')}] ${body}`
   } finally {
     await new Promise(resolve => server.close(resolve))

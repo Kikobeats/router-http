@@ -298,6 +298,9 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
     // What the frame removed, so leaving it can put it back rather than
     // reinstating a snapshot and discarding whatever middleware wrote since.
+    // Only read under `frameEntered`, which the mount branch sets after
+    // assigning all four; initialized rather than left bare to keep each slot
+    // one type from the start.
     let framePrefix = ''
     let frameUrl = ''
     let frameSourceUrl = req.url

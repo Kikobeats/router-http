@@ -27,7 +27,7 @@ A middleware-style router similar to [express router](https://github.com/pillarj
 
 - **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a radix-trie router whose lookup cost tracks the path length rather than the number of routes.
 - **Battle-tested** – Well maintained with comprehensive test coverage.
-- **Lightweight** – Only 2 kB (minified + gzipped)
+- **Lightweight** – Around 2 kB (minified + gzipped)
 
 ## Why not Express router?
 

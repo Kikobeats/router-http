@@ -862,7 +862,7 @@ test('.use() sub-router matches base path with query string', async t => {
 testMountGuards('multi-segment .use() mount runs path middleware', {
   mount: '/admin/panel',
   route: '/admin/panel/secret',
-  requests: ['/admin/panel/secret']
+  requests: ['/admin/panel/secret', '/%61dmin/panel/secret']
 })
 
 test('multi-segment .use() mounts a sub-router', async t => {
@@ -1036,12 +1036,6 @@ test('.use() strips an encoded mount before a nested handler sees the path', asy
     await got(new URL('/%61dmin/secret', url).toString()),
     'path=/secret'
   )
-})
-
-testMountGuards('.use() multi-segment encoded mount still runs path middleware', {
-  mount: '/admin/panel',
-  route: '/admin/panel/secret',
-  requests: ['/%61dmin/panel/secret']
 })
 
 test('.use() does not treat %2F as a mount separator', async t => {
