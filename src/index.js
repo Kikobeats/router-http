@@ -103,12 +103,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   const ignoreDuplicateSlashes = !!options.ignoreDuplicateSlashes
   const useSemicolonDelimiter = !!options.useSemicolonDelimiter
 
-  const ignoreTrailingSlash = !!options.ignoreTrailingSlash
-
   const collapseSlashes = ignoreDuplicateSlashes
     ? FindMyWay.removeDuplicateSlashes
     : identity
-  const trimTrailingSlash = ignoreTrailingSlash
+  const trimTrailingSlash = options.ignoreTrailingSlash
     ? FindMyWay.trimLastSlash
     : identity
   const normalizePath = path => trimTrailingSlash(collapseSlashes(path))
@@ -386,7 +384,9 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
           frameUrl = req.url
           // Without collapsing, the path is the url's path half and both walks
-          // stop at the same delimiter, so the second one is derivable.
+          // stop at the same delimiter, so the second one is derivable. The
+          // `desyncs` sweep in test/mount-invariant.js is what holds this: it
+          // fails if url and path ever stop describing the same resource.
           const pathPrefixEnd = ignoreDuplicateSlashes
             ? getSegmentEnd(frameSourcePath, segments)
             : urlPrefixEnd < frameSourcePath.length
@@ -444,8 +444,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     executeLoop()
   }
 
-  // Segment count rather than key length: a lowercased or percent-encoded
-  // request differs in bytes from the key it matched.
   const registerMount = mountPath => {
     const segment = getFirstPathSegment(mountPath)
     let bucket = mountsByFirstSegment[segment]
@@ -470,6 +468,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
 
     const mount = {
       path: mountPath,
+      // Segment count rather than key length: a lowercased or percent-encoded
+      // request differs in bytes from the key it matched.
       segments: countSegments(mountPath),
       globalsBefore: globalMiddlewares.length,
       mw: [],
