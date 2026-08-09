@@ -31,16 +31,16 @@ A middleware-style router similar to [express router](https://github.com/pillarj
 
 ## Why not Express router?
 
-Express uses regex-based route matching that degrades linearly as routes increase:
+Express matches routes by walking a list of regexes, so dispatch slows down as routes are added. Requests here hit the last route registered — the worst case for a list, and no different from the first for a trie:
 
 | Routes | `express@router` | `router-http` |
-|--------|-----------|---------------|
-| 5      | ~10.7M ops/sec | **~13.7M ops/sec** |
-| 10     | ~6.5M ops/sec | **~13.7M ops/sec** |
-| 50     | ~1.5M ops/sec | **~11.5M ops/sec** |
-| 1000   | ~41K ops/sec | **~10.6M ops/sec** |
+|--------|------------------|---------------|
+| 5 | ~2.6M ops/sec | **~8.5M ops/sec** |
+| 10 | ~2.1M ops/sec | **~8.5M ops/sec** |
+| 50 | ~891K ops/sec | **~7.6M ops/sec** |
+| 1000 | ~23K ops/sec | **~7.0M ops/sec** |
 
-In contrast, **router-http** is backed by a trie-based implementation that maintains nearly constant performance regardless of the number of routes.
+Across that range the express router loses 113× of its throughput; **router-http** loses 1.2×. Regenerate the table with `npm run benchmark:routes`.
 
 ## Installation
 
@@ -306,35 +306,15 @@ router.get('/v1/feature', (req, res) => res.end('Stable feature'))
 
 ## Benchmark
 
-Measured with `wrk -t8 -c100 -d30s` against the servers in [benchmark](/benchmark), **router-http** handles about 27% more requests per second than the express router:
+Over HTTP, against the same two-middleware app in [benchmark](/benchmark). Best of three interleaved 30s runs, `wrk -t8 -c100`, node v26.6.0:
 
-**express@5.2.1**
+| | Requests/sec |
+|---|---|
+| **router-http** | **110,983** |
+| polka | 108,444 |
+| express | 85,985 |
 
-```
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.23ms    1.40ms  96.27ms   99.61%
-    Req/Sec    10.15k   615.89    11.07k    86.24%
-  2430687 requests in 30.10s, 356.98MB read
-Requests/sec:  80752.48
-Transfer/sec:     11.86MB
-```
-
-**router-http**
-
-```
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     0.97ms    1.27ms  84.82ms   99.77%
-    Req/Sec    12.91k     1.07k   14.67k    71.51%
-  3092927 requests in 30.10s, 386.40MB read
-Requests/sec: 102751.65
-Transfer/sec:     12.84MB
-```
-
-See [benchmark](/benchmark) for details.
+About 29% ahead of the express router. Reproduce with `npm run benchmark` — it warms each server, interleaves the rounds so a busy moment cannot land on one of them, and prints the load average alongside the result.
 
 ## Related
 

@@ -1,57 +1,44 @@
 # Benchmarks
 
-All apps employ two global middlewares with `req` mutations, an empty `GET` route handler for `favicon.ico` and a `GET` handler for the `/users/:id`, returning a `User: {id}` string response.
+Two benchmarks, measuring different things.
 
-The conditions of the runs are:
+## Over HTTP — `npm run benchmark`
 
-- Using Node.js v18.14.0.
-- Using the latest stable module version available.
-- Running a first run as warmup.
+Every server here runs the same app: two global middlewares that mutate `req`, an empty `GET /favicon.ico`, and a `GET /user/:id` returning `User: {id}`. They are loaded with `wrk -t8 -c100`, warmed for 5s first.
 
-All the benchmark are run using the folllwing commnad:
+Rounds are interleaved rather than run back to back, and each server keeps its best. A single sequential sample lets whichever server happens to run during a load spike carry that handicap through its whole measurement — that alone was enough to invert the ranking on a busy laptop. Check the load average before trusting a run; the script prints it.
 
 ```sh
-wrk -t8 -c100 -d30s http://localhost:3000/user/123
+npm run benchmark          # 3 rounds of 30s
+./benchmark/run.sh 10s 5   # or pick your own
 ```
 
-## express@5.2.1
+Best of three 30s rounds, node v26.6.0, wrk 4.2.0, load average 5.7 on 12 cores:
 
+| | Requests/sec |
+|---|---|
+| **router-http** | **110,983** |
+| polka | 108,444 |
+| express | 85,985 |
 
-```
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.23ms    1.40ms  96.27ms   99.61%
-    Req/Sec    10.15k   615.89    11.07k    86.24%
-  2430687 requests in 30.10s, 356.98MB read
-Requests/sec:  80752.48
-Transfer/sec:     11.86MB
-```
+The three rounds agreed within 2.5% for express and 6% for router-http, so the ordering is stable even though the absolute numbers are depressed by the load.
 
-## polka@0.5.2
+## Dispatch vs route count — `npm run benchmark:routes`
 
-```
-wrk -t8 -c100 -d30s http://localhost:3000/user/123
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.01ms    1.27ms  85.35ms   99.61%
-    Req/Sec    12.45k     1.11k   17.39k    74.02%
-  2980626 requests in 30.10s, 372.37MB read
-Requests/sec:  99012.80
-Transfer/sec:     12.37MB
+In-process, no sockets: how dispatch scales as routes are registered. Requests hit the **last** route registered, the worst case for anything matching by iteration and no different from the first for a trie.
+
+```sh
+npm run benchmark:routes   # best of 5
+node benchmark/routes.js 3
 ```
 
-## router-http
+Best of five, node v26.6.0:
 
-```
-wrk -t8 -c100 -d30s http://localhost:3000/user/123
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     0.97ms    1.27ms  84.82ms   99.77%
-    Req/Sec    12.91k     1.07k   14.67k    71.51%
-  3092927 requests in 30.10s, 386.40MB read
-Requests/sec: 102751.65
-Transfer/sec:     12.84MB
-```
+| Routes | `express@router` | `router-http` |
+|--------|------------------|---------------|
+| 5 | ~2.6M ops/sec | **~8.5M ops/sec** |
+| 10 | ~2.1M ops/sec | **~8.5M ops/sec** |
+| 50 | ~891K ops/sec | **~7.6M ops/sec** |
+| 1000 | ~23K ops/sec | **~7.0M ops/sec** |
+
+Express loses 113× of its throughput across that range; router-http loses 1.2×. That gap is the reason for the trie, and it is why the HTTP benchmark above — a four-route app — understates the difference for any real routing table.
