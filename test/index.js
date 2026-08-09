@@ -189,7 +189,7 @@ test('respect req.search', async t => {
   t.is(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
 })
 
-test('a pre-set req.query does not become req.search', async t => {
+test('a pre-set req.query is not paired with a url req.search', async t => {
   const router = Router(final)
 
   router.get('/', (req, res) => res.end(`${req.query}|${req.search}`))
@@ -199,7 +199,9 @@ test('a pre-set req.query does not become req.search', async t => {
     router(req, res)
   })
 
-  t.is(await got(new URL('/?foo=barz', url).toString()), 'foo=bar|?foo=barz')
+  // Filling req.search from the url here would describe a different query
+  // string than the req.query sitting next to it.
+  t.is(await got(new URL('/?foo=barz', url).toString()), 'foo=bar|undefined')
 })
 
 test('`.all`', async t => {
@@ -1293,7 +1295,7 @@ test('respects a pre-set req.search', async t => {
     router(req, res)
   })
 
-  t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|foo=bar')
+  t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|undefined')
 })
 
 // Truthy rather than `true`: the option is coerced with `!!`, so this also

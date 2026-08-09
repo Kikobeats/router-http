@@ -280,10 +280,15 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       req.params = req.params || {}
     }
 
-    // Falsy rather than undefined: an outer router that parsed a url with no
-    // query stores null, and a handler may rewrite req.url before delegating.
-    req.search = req.search || urlInfo.search
-    req.query = req.query || urlInfo.query
+    // One decision for the pair, not two: setting them independently lets a
+    // caller who supplied only one end up with the other describing a
+    // different query string. Falsy rather than undefined, because an outer
+    // router that parsed a url with no query stores null, and a handler may
+    // rewrite req.url before delegating.
+    if (!req.query && !req.search) {
+      req.query = urlInfo.query
+      req.search = urlInfo.search
+    }
 
     const entryUrl = req.url
     const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl

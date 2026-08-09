@@ -168,7 +168,7 @@ The router adds these properties to `req`:
 | `req.baseUrl` | Mount prefix, while a mounted middleware runs |
 | `req.originalUrl` | The request target as the client sent it |
 
-> `req.query` and `req.search` are only set if not already present.
+> `req.query` and `req.search` are set together, and only if neither is already present. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
 
 `req.path` ends where find-my-way stops matching: at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). Absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded, where find-my-way matches on the decoded path.
 
