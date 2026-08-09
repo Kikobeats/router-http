@@ -168,13 +168,11 @@ The router adds these properties to `req`:
 | `req.baseUrl` | Mount prefix while a mounted middleware runs; the inherited prefix otherwise, `''` at the top level |
 | `req.originalUrl` | The request target as the client sent it |
 
-> `req.query` and `req.search` are set together, and only if neither already holds a value. They are the same query string in two shapes, so filling one from the url while the other came from a caller would leave them describing different requests.
+`req.path` ends where find-my-way stops matching: at the first `?` or `#`, or `;` with `useSemicolonDelimiter`. Absolute-form targets like `GET http://example.com/foo` are reduced to origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded.
 
-An `onBadUrl` or `onMaxParamLength` handler must end the response. It runs as the route handler, after global and mount middleware, and the chain stops there — a handler that only sets `statusCode` leaves the request hanging.
+`req.query` and `req.search` are whatever sits between `?` and `#` — a `?` inside a fragment is fragment content, not a query. Being two shapes of one string, they are set together and only if neither already holds a value.
 
-`req.path` ends where find-my-way stops matching: at the first `?` or `#` (and at the first `;` when `useSemicolonDelimiter` is enabled). Absolute-form request lines such as `GET http://example.com/foo` are reduced to their origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded, where find-my-way matches on the decoded path.
-
-The query is what sits between `?` and `#`. A `?` inside a fragment is fragment content, not a query string.
+> An `onBadUrl` or `onMaxParamLength` handler runs as the route handler and must end the response — one that only sets `statusCode` leaves the request hanging.
 
 ### Mounted middleware
 
@@ -204,11 +202,15 @@ router.get('/admin/panel/secret', (req, res) => {
 })
 ```
 
-That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and `req.originalUrl` always holds the target the client sent.
+That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and the tail keeps the slashes the client sent — duplicates and trailing included, even when this router is collapsing them.
 
-Only the mount's own prefix is removed, so a sub-router receives the tail as the client sent it — duplicate and trailing slashes included, even when this router is collapsing them. The one rewrite that survives into the tail is absolute-form: `GET http://example.com/v1/info` reaches a `/v1` sub-router as `/info`.
+> **Changed in 3.0.0.** The mount prefix used to be stripped permanently, so route handlers saw the shortened path too — read it from `req.baseUrl` instead. And only the longest matching mount used to run; now every one whose prefix matches does.
 
-Which mounts match is decided once, from the incoming target, before any middleware runs. A middleware that rewrites `req.url` still has its rewrite honoured — the frame strips from the rewritten value — but it cannot bring a new mount into play:
+### Express compatibility
+
+The semantics above are diffed against [`router`](https://github.com/pillarjs/router), the router Express itself uses, by running the same cases through both and comparing the middleware trace and the response ([`test/express-compat.js`](test/express-compat.js)). Two differences are deliberate.
+
+**Mounts are matched once**, from the incoming target, before any middleware runs. A rewrite of `req.url` is honoured — the frame strips from the rewritten value — but cannot pull in a mount that did not match. Express re-matches after every layer.
 
 ```js
 router.use((req, res, next) => {
@@ -218,44 +220,14 @@ router.use((req, res, next) => {
 router.use('/admin', authorize) // does not run for GET /other
 ```
 
-This is one of two deliberate differences from Express, which re-matches after every layer. The other is percent-encoded mounts, below.
+**Mounts are matched decoded**, so `.use('/café')` guards `GET /caf%C3%A9/secret` where Express matches neither the mount nor the route. find-my-way routes on the decoded path, so matching mounts literally would let a route run with its auth mount skipped.
 
-> **Changed in 3.0.0.** Two things moved. The mount prefix used to be stripped permanently, so route handlers saw the shortened path too — if you were reading that prefix in a route handler, it is now in `req.baseUrl`. And only the longest matching mount used to run; now every mount whose prefix matches does, in registration order, so a request under `/admin/panel` runs an `/admin` mount as well.
-
-### Express compatibility
-
-Middleware behaviour is checked against [`router`](https://github.com/pillarjs/router), the router Express itself uses, by running the same cases through both and comparing the middleware trace and the response. These match:
-
-- every mount whose prefix matches runs, in registration order
-- re-registering the same mount path keeps its position in that order
-- a global registered after a mount runs after it
-- a mount sees `req.url` stripped and `req.baseUrl` set; the route handler sees neither
-- `req.baseUrl` accumulates through nested routers, and `req.originalUrl` is the target the client sent
-- `next(null)` continues; `next('route')` from middleware continues to the next layer
-- a `req.url` rewritten before a mount survives the frame
-- trailing-slash and exact mount matches, query strings, and falling through to the parent
-
-The second deliberate difference, after match-once above: a mount registered decoded matches a percent-encoded request.
-
-```js
-router.use('/café', authorize)
-router.get('/café/secret', handler)
-
-// GET /caf%C3%A9/secret
-// pillarjs/router: neither the mount nor the route matches
-// router-http:     both match, so authorize runs
-```
-
-find-my-way matches routes on the decoded path, so mounts have to be matched the same way. Matching them literally would let the route run with its mount skipped, which for an auth mount is a bypass.
-
-The mirror of this is a footgun: **always register mounts decoded.** A mount spelled with percent-encoding matches nothing at all, because the request path it is compared against has already been decoded.
+The corollary is a footgun — **always spell mounts decoded**, since the path they are compared against is already decoded:
 
 ```js
 router.use('/caf%C3%A9', authorize) // never runs, for any request
 router.use('/café', authorize) // correct
 ```
-
-The same holds for routes — find-my-way registers no matchable route for a percent-encoded path either — so an encoded mount over an encoded route leaves both dead rather than leaving the route unguarded.
 
 ### Print routes
 
