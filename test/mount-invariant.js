@@ -174,6 +174,63 @@ test('a matched route never skips its mount, however the mount is spelled', t =>
   )
 })
 
+// The request mutators above vary what the client sent. This axis varies what
+// a middleware does to req.url afterwards, which is the other way the pair can
+// come apart: req.path is derived once, and the mount frame measures its prefix
+// against req.url.
+const REWRITES = [
+  '/x',
+  '/',
+  '/admin',
+  '/admin/panel/other',
+  '/admin//panel//y',
+  '/admin/panel/y?a=1',
+  '/admin/panel/y#frag',
+  'http://example.com/admin/panel/y'
+]
+
+test('req.path keeps describing req.url after a middleware rewrites it', t => {
+  const desyncs = []
+
+  for (const options of OPTION_SETS) {
+    for (const mount of ['/admin', '/admin/panel']) {
+      for (const rewrite of REWRITES) {
+        const seen = []
+        const router = Router(() => {}, options)
+
+        router.use((req, res, next) => {
+          req.url = rewrite
+          next()
+        })
+        router.use(mount, (req, res, next) => {
+          seen.push(['mount', req.url, req.path])
+          next()
+        })
+        router.get('/admin/panel/y', (req, res) => {
+          seen.push(['route', req.url, req.path])
+          res.end()
+        })
+
+        router({ method: 'GET', url: '/admin/panel/y' }, createResponse())
+
+        for (const [layer, url, path] of seen) {
+          // A rewritten url reaches the layer as sent; only its path half is
+          // normalized, the same way an incoming target is.
+          const originForm = url.replace(/^https?:\/\/[^/]+/, '')
+          if (!stripsConsistently(options, originForm, path)) {
+            desyncs.push(
+              `${JSON.stringify(options)} mount=${mount} rewrite=${rewrite} ` +
+                `${layer} left url=${url} path=${path}`
+            )
+          }
+        }
+      }
+    }
+  }
+
+  t.deepEqual(desyncs, [])
+})
+
 test('an encoded mount spelling matches nothing', t => {
   const router = Router(() => {})
   let mountRan = false

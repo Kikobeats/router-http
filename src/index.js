@@ -259,6 +259,10 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const pathname = urlInfo.path
 
     req.path = pathname
+    // The url req.path was derived from. A middleware may rewrite req.url, and
+    // the two are one fact in two shapes: whatever reads them next has to see
+    // them describing the same request.
+    let pathSource = req.url
     if (req.originalUrl === undefined) req.originalUrl = req.url
 
     let match = router.find(req.method, pathname)
@@ -325,12 +329,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       if (req.url === frameUrl) {
         req.url = frameSourceUrl
         req.path = frameSourcePath
+        pathSource = frameSourceUrl
         return
       }
       // A middleware rewrote the url inside the frame. Express re-prepends
       // what it removed, so the edit survives instead of being reverted.
       req.url = framePrefix + (req.url === '/' ? '' : req.url)
       req.path = parseUrl(req.url).path
+      pathSource = req.url
     }
 
     // Both exits abandon the remaining middleware and undo the frame, so the
@@ -368,6 +374,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const executeLoop = () => {
       if (res.writableEnded) return
 
+      // Re-derive rather than carry a snapshot forward: a middleware that
+      // rewrote req.url leaves req.path describing the previous request, and
+      // the frame below measures its prefix against req.url.
+      if (req.url !== pathSource) {
+        pathSource = req.url
+        req.path = parseUrl(req.url).path
+      }
+
       while (cursor >= limit) {
         if (
           mountIndex < matchedCount &&
@@ -399,6 +413,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
               ? urlPrefixEnd
               : frameSourcePath.length
           req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
+          pathSource = req.url
           frameEntered = true
           current = mount.mw
           cursor = 0

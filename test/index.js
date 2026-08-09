@@ -1105,6 +1105,30 @@ test('ignoreDuplicateSlashes leaves the query string intact', async t => {
   t.is(await got(target), 'redirect=https://example.com/b')
 })
 
+test('req.path follows a req.url rewritten before a mount', async t => {
+  const router = Router(final)
+  const seen = []
+
+  router.use((req, res, next) => {
+    req.url = '/x'
+    next()
+  })
+  router.use('/admin/panel', (req, res, next) => {
+    seen.push(`mount ${req.url}|${req.path}`)
+    next()
+  })
+  router.get('/admin/panel/y', (req, res) => {
+    seen.push(`route ${req.url}|${req.path}`)
+    res.end(seen.join(' '))
+  })
+
+  const url = await runServer(t, router)
+
+  // The mount measures its prefix against the rewritten url, so req.path has
+  // to describe that url too — not the one the request arrived with.
+  t.is(await got(new URL('/admin/panel/y', url).toString()), 'mount /|/ route /x|/x')
+})
+
 test('req.url is untouched when a global middleware diverts', async t => {
   const router = Router(final, { ignoreDuplicateSlashes: true })
 
