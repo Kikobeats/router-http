@@ -303,8 +303,8 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     // one type from the start.
     let framePrefix = ''
     let frameUrl = ''
-    let frameSourceUrl = req.url
-    let frameSourcePath = pathname
+    let frameSourceUrl = ''
+    let frameSourcePath = ''
 
     const globalCount = globalMiddlewares.length
 

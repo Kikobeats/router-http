@@ -5,33 +5,26 @@ const { createServer } = require('http')
 const ExpressRouter = require('router')
 const test = require('ava').default
 
-const got = require('got').extend({
-  retry: 0,
-  responseType: 'text',
-  throwHttpErrors: false,
-  resolveBodyOnly: true
-})
-
 const Router = require('..')
+const { got, createTracker } = require('./_helpers')
 
 // Behaviour is compared against the router Express itself uses by running the
 // same case through both and diffing the middleware trace and the response.
 // Asserting equality against a real implementation catches drift that a
 // hand-written expectation cannot, because it does not encode our own reading
 // of the semantics.
+// Falls through to the harness on success, the same way express hands back to
+// its caller. An error is rendered instead of being handed on, so a case that
+// throws shows up as a 500 rather than matching express's 'DONE' by accident.
 const createRouter = () =>
   Router((error, req, res, next) => {
-    if (next !== undefined) return next()
-    res.statusCode = error ? 500 : 404
-    res.end(error ? String(error.message || error) : 'DONE')
+    if (!error) return next()
+    res.statusCode = 500
+    res.end(String(error.message || error))
   })
 
 const runCase = async (createRouterUnderTest, testCase) => {
-  const trace = []
-  const track = name => (req, res, next) => {
-    trace.push(name)
-    next()
-  }
+  const { ran: trace, mark: track } = createTracker()
 
   const router = createRouterUnderTest()
   testCase.build(router, track, createRouterUnderTest)

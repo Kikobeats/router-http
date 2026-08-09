@@ -248,6 +248,15 @@ router.get('/café/secret', handler)
 
 find-my-way matches routes on the decoded path, so mounts have to be matched the same way. Matching them literally would let the route run with its mount skipped, which for an auth mount is a bypass.
 
+The mirror of this is a footgun: **always register mounts decoded.** A mount spelled with percent-encoding matches nothing at all, because the request path it is compared against has already been decoded.
+
+```js
+router.use('/caf%C3%A9', authorize) // never runs, for any request
+router.use('/café', authorize) // correct
+```
+
+The same holds for routes — find-my-way registers no matchable route for a percent-encoded path either — so an encoded mount over an encoded route leaves both dead rather than leaving the route unguarded.
+
 ### Print routes
 
 You can visualize your router's routes in a readable tree format using the `router.prettyPrint()` method. This is especially helpful for debugging or understanding your route structure at a glance.

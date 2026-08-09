@@ -5,12 +5,7 @@ const { createServer } = require('http')
 const { connect } = require('net')
 const test = require('ava').default
 
-const got = require('got').extend({
-  retry: 0,
-  responseType: 'text',
-  throwHttpErrors: false,
-  resolveBodyOnly: true
-})
+const { got, createTracker } = require('./_helpers')
 
 const delay = d => new Promise(resolve => setTimeout(resolve, d))
 
@@ -53,18 +48,6 @@ const rawRequest = (url, target, headers = {}) =>
     })
   })
 
-// Records which layers ran, in order, so a test can assert the sequence.
-const createTracker = () => {
-  const ran = []
-  return {
-    ran,
-    mark: name => (req, res, next) => {
-      ran.push(name)
-      next()
-    }
-  }
-}
-
 const authorize = (req, res, next) => {
   if (req.headers.authorization !== 'secret') {
     res.statusCode = 401
@@ -73,21 +56,21 @@ const authorize = (req, res, next) => {
   next()
 }
 
-const assertUnauthorized = async (t, url, path, message) => {
+const assertUnauthorized = async (t, url, path) => {
   const denied = await got(new URL(path, url).toString(), {
     resolveBodyOnly: false
   })
-  t.is(denied.statusCode, 401, message)
-  t.is(denied.body, 'unauthorized', message)
+  t.is(denied.statusCode, 401, path)
+  t.is(denied.body, 'unauthorized', path)
 }
 
-const assertAuthorized = async (t, url, path, message) =>
+const assertAuthorized = async (t, url, path) =>
   t.is(
     await got(new URL(path, url).toString(), {
       headers: { authorization: 'secret' }
     }),
     'secret data',
-    message
+    path
   )
 
 // A mount guards every request under it: denied without the header, through to
@@ -102,8 +85,8 @@ const testMountGuards = (title, { options, mount, route, requests }) =>
     const url = await runServer(t, router)
 
     for (const request of requests) {
-      await assertUnauthorized(t, url, request, request)
-      await assertAuthorized(t, url, request, request)
+      await assertUnauthorized(t, url, request)
+      await assertAuthorized(t, url, request)
     }
   })
 
