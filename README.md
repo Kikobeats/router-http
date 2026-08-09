@@ -14,14 +14,12 @@
   - [Advanced](#advanced)
     - [Request object](#request-object)
     - [Mounted middleware](#mounted-middleware)
-    - [Express compatibility](#express-compatibility)
     - [Print routes](#print-routes)
     - [Nested routers](#nested-routers)
     - [Skipping to parent router](#skipping-to-parent-router)
   - [Benchmark](#benchmark)
   - [Related](#related)
   - [License](#license)
-
 
 A middleware-style router similar to [express router](https://github.com/pillarjs/router), with key advantages:
 
@@ -204,31 +202,6 @@ router.get('/admin/panel/secret', (req, res) => {
 
 That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and the tail keeps the slashes the client sent — duplicates and trailing included, even when this router is collapsing them.
 
-> **Changed in 3.0.0.** The mount prefix used to be stripped permanently, so route handlers saw the shortened path too — read it from `req.baseUrl` instead. And only the longest matching mount used to run; now every one whose prefix matches does.
-
-### Express compatibility
-
-The semantics above are diffed against [`router`](https://github.com/pillarjs/router), the router Express itself uses, by running the same cases through both and comparing the middleware trace and the response ([`test/express-compat.js`](test/express-compat.js)). Two differences are deliberate.
-
-**Mounts are matched once**, from the incoming target, before any middleware runs. A rewrite of `req.url` is honoured — the frame strips from the rewritten value — but cannot pull in a mount that did not match. Express re-matches after every layer.
-
-```js
-router.use((req, res, next) => {
-  req.url = '/admin/x'
-  next()
-})
-router.use('/admin', authorize) // does not run for GET /other
-```
-
-**Mounts are matched decoded**, so `.use('/café')` guards `GET /caf%C3%A9/secret` where Express matches neither the mount nor the route. find-my-way routes on the decoded path, so matching mounts literally would let a route run with its auth mount skipped.
-
-The corollary is a footgun — **always spell mounts decoded**, since the path they are compared against is already decoded:
-
-```js
-router.use('/caf%C3%A9', authorize) // never runs, for any request
-router.use('/café', authorize) // correct
-```
-
 ### Print routes
 
 You can visualize your router's routes in a readable tree format using the `router.prettyPrint()` method. This is especially helpful for debugging or understanding your route structure at a glance.
@@ -250,7 +223,6 @@ http.createServer(router).listen(3000)
 The printed output shows the nested structure of your routes along with their registered HTTP methods. It covers the routes registered on this router only — a sub-router mounted with `.use()` holds its own routing table and prints its own tree. The `routes` getter has the same scope.
 
 See more in [find-my-way prettyPrint documentation](https://github.com/delvedor/find-my-way#routerprettyprint).
-
 
 ### Nested routers
 
