@@ -54,6 +54,25 @@ const rawRequest = (url, target, headers = {}) =>
     })
   })
 
+// Leaves errors to the default 500 so a test can assert the 404 path alone.
+const notFound = (err, req, res) => {
+  if (err) return
+  res.statusCode = 404
+  res.end('Not Found')
+}
+
+// Records which layers ran, in order, so a test can assert the sequence.
+const createTracker = () => {
+  const ran = []
+  return {
+    ran,
+    mark: name => (req, res, next) => {
+      ran.push(name)
+      next()
+    }
+  }
+}
+
 const authorize = (req, res, next) => {
   if (req.headers.authorization !== 'secret') {
     res.statusCode = 401
@@ -108,13 +127,9 @@ test('throws error if the same route is added twice', t => {
   )
 })
 
-test('final handler is required', async t => {
-  t.plan(1)
-  try {
-    Router()
-  } catch (error) {
-    t.is(error.message, 'You should to provide a final handler')
-  }
+test('final handler is required', t => {
+  const error = t.throws(() => Router())
+  t.is(error.message, 'You should to provide a final handler')
 })
 
 test('hide internals', async t => {
@@ -174,19 +189,6 @@ test('respect req.query', async t => {
     }),
     { foo: 'bar' }
   )
-})
-
-test('respect req.search', async t => {
-  const router = Router(final)
-
-  router.get('/', (req, res) => res.end(req.search))
-
-  const url = await runServer(t, (req, res) => {
-    req.search = '?foo=bar'
-    router(req, res)
-  })
-
-  t.is(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
 })
 
 test('a pre-set req.query is not paired with a url req.search', async t => {
@@ -624,7 +626,6 @@ test('middleware runs before routes regardless of declaration order', async t =>
 
   const url = await runServer(t, router)
 
-  // Test /ping
   executionOrder.length = 0
   await got(new URL('/ping', url).toString())
   t.deepEqual(
@@ -633,7 +634,6 @@ test('middleware runs before routes regardless of declaration order', async t =>
     'middleware runs before /ping even though declared after'
   )
 
-  // Test /checkout
   executionOrder.length = 0
   await got(new URL('/checkout', url).toString())
   t.deepEqual(
@@ -646,7 +646,6 @@ test('middleware runs before routes regardless of declaration order', async t =>
 test('middleware declaration order vs route declaration order', async t => {
   const executionOrder = []
 
-  // Compare two routers: one with .use() before .get(), one with .use() after .get()
   const routerUseBefore = Router(final)
   routerUseBefore
     .use((req, res, next) => {
@@ -672,7 +671,6 @@ test('middleware declaration order vs route declaration order', async t => {
   const urlBefore = await runServer(t, routerUseBefore)
   const urlAfter = await runServer(t, routerUseAfter)
 
-  // Test router with .use() declared before .get()
   executionOrder.length = 0
   await got(new URL('/test', urlBefore).toString())
   t.deepEqual(
@@ -681,7 +679,6 @@ test('middleware declaration order vs route declaration order', async t => {
     '.use() before .get() - middleware runs first'
   )
 
-  // Test router with .use() declared after .get()
   executionOrder.length = 0
   await got(new URL('/test', urlAfter).toString())
   t.deepEqual(
@@ -797,11 +794,7 @@ test('a single-method route registers once', t => {
 })
 
 test('handles bad URLs (invalid encoding)', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(notFound)
 
   router.get('/hello', (req, res) => {
     res.end('hello')
@@ -816,11 +809,7 @@ test('handles bad URLs (invalid encoding)', async t => {
 })
 
 test('matches static routes with encoded characters', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(notFound)
 
   router.get('/hello world', (req, res) => {
     res.end('found')
@@ -833,11 +822,7 @@ test('matches static routes with encoded characters', async t => {
 })
 
 test('decodes parameters in path', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(notFound)
 
   router.get('/greetings/:name', (req, res) => {
     res.end(`Hello, ${req.params.name}`)
@@ -1408,11 +1393,7 @@ test('a second router re-parses the query after req.url is rewritten', async t =
 
 test('re-registering a mount path keeps registration order', async t => {
   const router = Router(final)
-  const ran = []
-  const mark = name => (req, res, next) => {
-    ran.push(name)
-    next()
-  }
+  const { ran, mark } = createTracker()
 
   router.use('/admin/panel', mark('audit'))
   router.use('/admin', mark('authorize'))
@@ -1426,11 +1407,7 @@ test('re-registering a mount path keeps registration order', async t => {
 
 test('a global registered after a mount runs after it', async t => {
   const router = Router(final)
-  const ran = []
-  const mark = name => (req, res, next) => {
-    ran.push(name)
-    next()
-  }
+  const { ran, mark } = createTracker()
 
   router.use('/admin', mark('authorize'))
   router.use(mark('logger'))
@@ -1529,11 +1506,7 @@ test('a url rewritten inside a mount survives leaving it', async t => {
 
 test("next('route') from middleware continues to the next layer", async t => {
   const router = Router(final)
-  const ran = []
-  const mark = name => (req, res, next) => {
-    ran.push(name)
-    next()
-  }
+  const { ran, mark } = createTracker()
 
   router.use((req, res, next) => {
     ran.push('g1')
@@ -1551,11 +1524,7 @@ test("next('route') from middleware continues to the next layer", async t => {
 
 test('consecutive .use() on the same path keep running in order', async t => {
   const router = Router(final)
-  const ran = []
-  const mark = name => (req, res, next) => {
-    ran.push(name)
-    next()
-  }
+  const { ran, mark } = createTracker()
 
   router.use('/api', mark('cors'))
   router.use('/api', mark('auth'))

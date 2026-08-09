@@ -12,8 +12,6 @@ const Router = require('..')
 // Asserting equality against a real implementation catches drift that a
 // hand-written expectation cannot, because it does not encode our own reading
 // of the semantics.
-const createExpressRouter = () => ExpressRouter()
-
 const createRouter = () =>
   Router((error, req, res, next) => {
     if (next !== undefined) return next()
@@ -21,7 +19,7 @@ const createRouter = () =>
     res.end(error ? String(error.message || error) : 'DONE')
   })
 
-const runCase = async (t, createRouterUnderTest, testCase) => {
+const runCase = async (createRouterUnderTest, testCase) => {
   const trace = []
   const track = name => (req, res, next) => {
     trace.push(name)
@@ -187,8 +185,8 @@ const SHARED_BEHAVIOUR = [
 
 for (const testCase of SHARED_BEHAVIOUR) {
   test(`matches express: ${testCase.name}`, async t => {
-    const expected = await runCase(t, createExpressRouter, testCase)
-    const actual = await runCase(t, createRouter, testCase)
+    const expected = await runCase(ExpressRouter, testCase)
+    const actual = await runCase(createRouter, testCase)
     t.is(actual, expected)
   })
 }
@@ -206,8 +204,8 @@ const ENCODED_MOUNT = {
 }
 
 test('a decoded mount matches a percent-encoded request', async t => {
-  const express = await runCase(t, createExpressRouter, ENCODED_MOUNT)
-  const ours = await runCase(t, createRouter, ENCODED_MOUNT)
+  const express = await runCase(ExpressRouter, ENCODED_MOUNT)
+  const ours = await runCase(createRouter, ENCODED_MOUNT)
 
   t.is(express, '[] DONE', 'express matches neither the mount nor the route')
   t.is(ours, '[authorize] END', 'both match, so the mount still guards')
