@@ -170,8 +170,6 @@ The router adds these properties to `req`:
 
 `req.query` and `req.search` are whatever sits between `?` and `#` — a `?` inside a fragment is fragment content, not a query. Being two shapes of one string, they are set together and only if neither already holds a value.
 
-> An `onBadUrl` or `onMaxParamLength` handler runs as the route handler and must end the response — one that only sets `statusCode` leaves the request hanging.
-
 ### Mounted middleware
 
 `.use(path, ...fns)` mounts middleware under a path prefix, following Express semantics.
