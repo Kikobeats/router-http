@@ -15,8 +15,20 @@ const HTTP_METHODS = [
   'connect'
 ]
 
+const ALL_METHODS = HTTP_METHODS.map(method => method.toUpperCase())
+
 const SLASH_CHAR_CODE = 47
+const QUESTION_MARK_CHAR_CODE = 63
+const HASH_CHAR_CODE = 35
+const SEMICOLON_CHAR_CODE = 59
 const SYNC_ITERATION_LIMIT = 100
+
+const EMPTY_HANDLERS = []
+const EMPTY_MOUNTS = []
+
+const identity = value => value
+
+const earlierIndex = (a, b) => (a === -1 ? b : b === -1 || a < b ? a : b)
 
 const requiredFinalHandler = () => {
   throw new TypeError('You should to provide a final handler')
@@ -25,24 +37,30 @@ const requiredFinalHandler = () => {
 const ensureLeadingSlash = route =>
   route.charCodeAt(0) === SLASH_CHAR_CODE ? route : `/${route}`
 
+// Mounts bucket by first decoded segment. An empty first segment (`//admin`)
+// must still bucket to `/` for both mounts and request paths; returning the
+// whole path would put them in separate buckets that never meet.
 const getFirstPathSegment = pathname => {
   const secondSlashIndex = pathname.indexOf('/', 1)
-  return secondSlashIndex > 1
-    ? pathname.substring(0, secondSlashIndex)
-    : pathname
+  return secondSlashIndex === -1
+    ? pathname
+    : pathname.substring(0, secondSlashIndex)
 }
 
-const normalizeMountPath = path => {
+const toMountPath = path => {
   const withSlash = ensureLeadingSlash(path)
   let end = withSlash.length
   while (end > 1 && withSlash.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
     end--
   }
-  return end === withSlash.length ? withSlash : withSlash.substring(0, end)
+  return withSlash.substring(0, end)
 }
 
 // decodeURI (not decodeURIComponent): leave %2F encoded so it cannot invent
 // path segments and desync mount match from raw segment stripping.
+// Differs from find-my-way's safeDecodeURI on %25, which it re-encodes to
+// survive decoding. Unreachable: find-my-way matches no route whose path
+// contains %25, so no route under such a mount can run either.
 const decodePathname = pathname => {
   if (pathname.indexOf('%') === -1) return pathname
   try {
@@ -52,67 +70,160 @@ const decodePathname = pathname => {
   }
 }
 
-// Encoded mounts differ in byte length from the registered path; take N raw segments.
-const getRawMountPrefix = (pathname, segmentCount) => {
+const countSegments = mountPath => {
   let count = 0
-  let i = 1
-  while (i < pathname.length) {
-    const next = pathname.indexOf('/', i)
-    count++
-    if (count === segmentCount) {
-      return next === -1 ? pathname : pathname.substring(0, next)
-    }
-    if (next === -1) return pathname
-    i = next + 1
+  for (let i = 0; i < mountPath.length; i++) {
+    if (mountPath.charCodeAt(i) === SLASH_CHAR_CODE) count++
   }
-  return pathname
+  return count
 }
 
-const parseUrl = ({ url }) => {
-  const queryIndex = url.indexOf('?', 1)
-  if (queryIndex === -1) {
-    return { pathname: url, query: null, search: null }
-  }
-  const search = url.substring(queryIndex)
-  return {
-    pathname: url.substring(0, queryIndex),
-    query: search.substring(1),
-    search
-  }
-}
+// RFC 7230 §5.3.2 absolute-form targets; same rewrite find-my-way applies.
+const ABSOLUTE_FORM_REGEXP = /^https?:\/\/.*?\//
 
-const QUESTION_MARK_CHAR_CODE = 63
-
-const mutateRequestUrl = (prefix, req) => {
-  const remainingUrl = req.url.substring(prefix.length)
-  req.url = !remainingUrl || remainingUrl.charCodeAt(0) === QUESTION_MARK_CHAR_CODE
-    ? `/${remainingUrl}`
-    : remainingUrl
-  const remainingPath = req.path.substring(prefix.length)
-  req.path = remainingPath || '/'
-}
+const toOriginForm = pathname =>
+  pathname.charCodeAt(0) === SLASH_CHAR_CODE
+    ? pathname
+    : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
 
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
-  const router = FindMyWay({
-    ...options,
-    defaultRoute: (req, res) => finalhandler(undefined, req, res)
-  })
+  // No defaultRoute: it only fires through find-my-way's lookup(), which this
+  // router never calls. An unmatched path is handled where the match is read.
+  const router = FindMyWay(options)
+
+  // Mirror find-my-way lookup normalization so .use() mounts cannot be skipped
+  // after the router still matches a route (auth bypass).
+  const caseSensitive =
+    options.caseSensitive === undefined ? true : options.caseSensitive
+  // find-my-way lowercases stored routes on `!caseSensitive` but lowercases the
+  // lookup path on `caseSensitive === false`; mirror each side separately.
+  const lowercaseMountPath = !caseSensitive
+  const lowercaseLookupPath = caseSensitive === false
+  const ignoreDuplicateSlashes = !!options.ignoreDuplicateSlashes
+  const useSemicolonDelimiter = !!options.useSemicolonDelimiter
+
+  const collapseSlashes = ignoreDuplicateSlashes
+    ? FindMyWay.removeDuplicateSlashes
+    : identity
+  const trimTrailingSlash = options.ignoreTrailingSlash
+    ? FindMyWay.trimLastSlash
+    : identity
+  const normalizePath = path => trimTrailingSlash(collapseSlashes(path))
+
+  // Mount keys carry the whole normalization; lookup keys only decode, because
+  // parseUrl has already collapsed and trimmed the path by the time
+  // matchMounts compares them.
+  const normalizeMountKey = lowercaseMountPath
+    ? path => toMountPath(collapseSlashes(path)).toLowerCase()
+    : path => toMountPath(collapseSlashes(path))
+
+  const normalizeLookupKey = lowercaseLookupPath
+    ? pathname => decodePathname(pathname).toLowerCase()
+    : decodePathname
+
+  // The path ends at the first `?`, `#`, or (opt-in) `;`, exactly where
+  // find-my-way's safeDecodeURI stops. Normalization applies to that half
+  // only: collapsing slashes in the query would rewrite `https://` targets.
+  const parseUrl = url => {
+    const originForm = toOriginForm(url)
+    const questionIndex = originForm.indexOf('?', 1)
+    const hashIndex = originForm.indexOf('#', 1)
+
+    let delimiterIndex = earlierIndex(questionIndex, hashIndex)
+    if (useSemicolonDelimiter) {
+      delimiterIndex = earlierIndex(delimiterIndex, originForm.indexOf(';', 1))
+    }
+
+    const path = normalizePath(
+      delimiterIndex === -1 ? originForm : originForm.substring(0, delimiterIndex)
+    )
+
+    // The query is what sits between `?` and `#`. A `?` after a `#` is
+    // fragment content, and a `#` after a `?` ends the query.
+    const hasQuery =
+      questionIndex !== -1 && (hashIndex === -1 || questionIndex < hashIndex)
+    const search = hasQuery
+      ? originForm.substring(
+        questionIndex,
+        hashIndex === -1 ? originForm.length : hashIndex
+      )
+      : null
+
+    return {
+      path,
+      query: search === null ? null : search.substring(1),
+      search
+    }
+  }
+
+  // The same terminator set parseUrl splits on, spelled per character because
+  // this one scans. Two encodings of one fact: change either and change both.
+  const isPathEnd = charCode =>
+    charCode === QUESTION_MARK_CHAR_CODE ||
+    charCode === HASH_CHAR_CODE ||
+    (charCode === SEMICOLON_CHAR_CODE && useSemicolonDelimiter)
+
+  // Where a mount's segments end. The raw url and the normalized path are
+  // walked by this one function so they cannot disagree: `//` is a run to skip
+  // only when the path it is compared against had its slashes collapsed too.
+  const getSegmentEnd = (value, segmentCount) => {
+    const length = value.length
+    let count = 0
+    let i = 0
+
+    while (i < length) {
+      if (ignoreDuplicateSlashes) {
+        while (i < length && value.charCodeAt(i) === SLASH_CHAR_CODE) i++
+      } else if (value.charCodeAt(i) === SLASH_CHAR_CODE) {
+        i++
+      }
+
+      while (i < length) {
+        const charCode = value.charCodeAt(i)
+        if (charCode === SLASH_CHAR_CODE) break
+        if (isPathEnd(charCode)) return i
+        i++
+      }
+
+      if (++count === segmentCount) return i
+    }
+
+    return length
+  }
 
   const globalMiddlewares = []
-  const middlewaresByPath = new NullProtoObj()
-  // First decoded segment → mounts under that segment, longest path first.
+  // First decoded segment -> mounts under it, in registration order. The index
+  // earns its keep at scale: scanning every mount instead measured +12.8% at 8
+  // mounts and +223% at 128, against a request hitting the last one.
   const mountsByFirstSegment = new NullProtoObj()
-  let pathMountCount = 0
+  // Deriving the bucket key costs a substring and a cold hash. While every
+  // mount shares one first segment there is nothing to discriminate, so skip it
+  // and scan that bucket: -19.3% for the single-mount router, and never worse.
+  let soleBucket = null
+  // The most recently registered mount, and the flag for whether any exists.
+  // Letting consecutive `.use()` calls on the same path share a layer keeps the
+  // single-match path allocation-free: without it, `use('/api', a);
+  // use('/api', b)` costs +24%, and +71% at four.
+  let lastMount = null
 
-  const matchPathMiddleware = pathname => {
-    if (pathMountCount === 0) return undefined
+  // Every mount that prefixes the path, not just the longest: each one gets its
+  // own frame, the way Express runs every matching `app.use` layer.
+  const matchMounts = pathname => {
+    if (lastMount === null) return EMPTY_MOUNTS
 
-    const decoded = decodePathname(pathname)
-    const candidates = mountsByFirstSegment[getFirstPathSegment(decoded)]
-    if (candidates === undefined) return undefined
+    const decoded = normalizeLookupKey(pathname)
+    const mounts =
+      soleBucket !== null
+        ? soleBucket
+        : mountsByFirstSegment[getFirstPathSegment(decoded)]
+    if (mounts === undefined) return EMPTY_MOUNTS
 
-    for (let i = 0; i < candidates.length; i++) {
-      const mountPath = candidates[i].path
+    // One match is the common case and reuses the mount's own single-element
+    // array, so matching allocates nothing until mounts actually overlap.
+    let first
+    let matched
+    for (let i = 0; i < mounts.length; i++) {
+      const mountPath = mounts[i].path
       const mountLen = mountPath.length
       if (
         decoded === mountPath ||
@@ -120,94 +231,135 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           decoded.charCodeAt(mountLen) === SLASH_CHAR_CODE &&
           decoded.startsWith(mountPath))
       ) {
-        return candidates[i].mw
+        if (first === undefined) first = mounts[i]
+        else {
+          if (matched === undefined) matched = [first]
+          matched.push(mounts[i])
+        }
       }
     }
-    return undefined
+
+    if (matched !== undefined) return matched
+    return first === undefined ? EMPTY_MOUNTS : first.solo
   }
 
-  const findRoute = (method, path, constraints) => {
-    const result = router.find(method, path, constraints)
-    if (result === null) {
-      return { params: {}, handlers: [] }
-    }
-    return { params: result.params, handlers: result.handler.handlers }
-  }
-
-  const registerRoute = (method, path, handlers) => {
-    const routeHandler = () => {}
-    routeHandler.handlers = handlers
-    router.on(method, path, routeHandler)
-  }
-
-  const addRoute = (method, path, ...handlers) => {
+  const addRoute = (methods, path, ...handlers) => {
     const fns = handlers.flat().filter(Boolean)
     if (fns.length === 0) return handler
 
-    const methods = method === '' ? HTTP_METHODS : [method]
-
-    for (let i = 0; i < methods.length; i++) {
-      registerRoute(methods[i].toUpperCase(), path, fns)
-    }
+    const routeHandler = () => {}
+    routeHandler.handlers = fns
+    router.on(methods, path, routeHandler)
 
     return handler
   }
 
-  const selectMiddleware = (
-    index,
-    globalLen,
-    pathLen,
-    globalMw,
-    pathMw,
-    routeHandlers
-  ) => {
-    if (index < globalLen) return globalMw[index]
-    if (index < globalLen + pathLen) return pathMw[index - globalLen]
-    return routeHandlers[index - globalLen - pathLen]
-  }
-
   const handler = (req, res, next) => {
-    const urlInfo = parseUrl(req)
-    const pathname = urlInfo.pathname
+    const urlInfo = parseUrl(req.url)
+    const pathname = urlInfo.path
+
     req.path = pathname
+    // The url req.path was derived from. A middleware may rewrite req.url, and
+    // the two are one fact in two shapes: whatever reads them next has to see
+    // them describing the same request.
+    let pathSource = req.url
+    if (req.originalUrl === undefined) req.originalUrl = req.url
 
-    let route = findRoute(req.method, pathname)
-
-    if (route.handlers.length === 0 && req.method === 'HEAD') {
-      route = findRoute('GET', pathname)
+    let match = router.find(req.method, pathname)
+    if (match === null && req.method === 'HEAD') {
+      match = router.find('GET', pathname)
     }
 
-    const globalMw = globalMiddlewares
-    const pathMw = matchPathMiddleware(pathname)
-    const routeHandlers = route.handlers.length > 0 ? route.handlers : null
+    const matchedMounts = matchMounts(pathname)
+    const matchedCount = matchedMounts.length
+    let routeHandlers = EMPTY_HANDLERS
 
-    if (routeHandlers !== null) {
+    if (match !== null) {
+      // onBadUrl / onMaxParamLength are plain find-my-way handlers without our
+      // `.handlers` wrapper; run them as a single middleware.
+      const wrapped = match.handler.handlers
+      routeHandlers = wrapped === undefined ? [match.handler] : wrapped
       req.params =
         req.params !== undefined
-          ? { ...req.params, ...route.params }
-          : route.params
-    } else {
-      req.params = req.params || {}
+          ? { ...req.params, ...match.params }
+          : match.params
+    } else if (req.params === undefined) {
+      req.params = {}
     }
 
-    req.search = req.query || urlInfo.search
-    req.query = req.query || urlInfo.query
+    // One decision for the pair, not two: setting them independently lets a
+    // caller who supplied only one end up with the other describing a
+    // different query string. Falsy rather than undefined, because an outer
+    // router that parsed a url with no query stores null, and a handler may
+    // rewrite req.url before delegating.
+    if (!req.query && !req.search) {
+      req.query = urlInfo.query
+      req.search = urlInfo.search
+    }
 
-    let index = 0
+    const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl
+    req.baseUrl = entryBaseUrl
+
+    // What the frame removed, so leaving it can put it back rather than
+    // reinstating a snapshot and discarding whatever middleware wrote since.
+    // Only read under `frameEntered`, which the mount branch sets after
+    // assigning all four; initialized rather than left bare to keep each slot
+    // one type from the start.
+    let framePrefix = ''
+    let frameUrl = ''
+    let frameSourceUrl = ''
+    let frameSourcePath = ''
+
+    const globalCount = globalMiddlewares.length
+
     let syncCount = 0
+    let mountIndex = 0
+    let globalIndex = 0
+    let routeStarted = false
+    let frameEntered = false
+    let current = EMPTY_HANDLERS
+    let cursor = 0
+    let limit = 0
 
-    const globalLen = globalMw.length
-    const pathLen = pathMw !== undefined ? pathMw.length : 0
-    const routeLen = routeHandlers !== null ? routeHandlers.length : 0
-    const totalMiddlewares = globalLen + pathLen + routeLen
-
-    const handleNext = err => {
-      if (err === 'router') {
-        if (next !== undefined) return next()
-        index = totalMiddlewares
-        err = undefined
+    // Extracted because four layer transitions undo a frame; entry has one site
+    // and stays inline.
+    const leaveFrame = () => {
+      frameEntered = false
+      req.baseUrl = entryBaseUrl
+      if (req.url === frameUrl) {
+        req.url = frameSourceUrl
+        req.path = frameSourcePath
+        pathSource = frameSourceUrl
+        return
       }
-      if (err !== undefined) return finalhandler(err, req, res, next)
+      // A middleware rewrote the url inside the frame. Express re-prepends
+      // what it removed, so the edit survives instead of being reverted.
+      req.url = framePrefix + (req.url === '/' ? '' : req.url)
+      req.path = parseUrl(req.url).path
+      pathSource = req.url
+    }
+
+    // Both exits abandon the remaining middleware and undo the frame, so the
+    // parent router and the error handler see what the client actually sent.
+    // Truthiness, not `!== undefined`: `next(null)` is the ordinary callback
+    // idiom for success and must not be read as a failure.
+    const handleNext = err => {
+      if (err) {
+        // Express only lets 'route' skip a route's own handler stack; from
+        // middleware it continues to the next layer like a plain next().
+        if (err === 'route') {
+          if (routeStarted) cursor = limit
+          return executeLoop()
+        }
+        mountIndex = matchedCount
+        globalIndex = globalCount
+        routeStarted = true
+        limit = 0
+        if (frameEntered) leaveFrame()
+        if (err !== 'router') return finalhandler(err, req, res, next)
+        if (next !== undefined) return next()
+        return executeLoop()
+      }
       if (++syncCount > SYNC_ITERATION_LIMIT) {
         syncCount = 0
         return setImmediate(executeLoop)
@@ -215,108 +367,167 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
       executeLoop()
     }
 
+    // Globals and mount frames interleave by registration order, which is what
+    // `globalsBefore` records. Only a mount runs on a stripped request, so
+    // every other layer restores first: a global sitting between two mounts
+    // belongs to the router, not to whichever frame happened to precede it.
     const executeLoop = () => {
-      if (index < totalMiddlewares) {
-        if (res.writableEnded) return
+      if (res.writableEnded) return
 
-        const currentIndex = index++
-        const middleware = selectMiddleware(
-          currentIndex,
-          globalLen,
-          pathLen,
-          globalMw,
-          pathMw,
-          routeHandlers
-        )
-
-        try {
-          const result = middleware(req, res, handleNext)
-          if (
-            result !== null &&
-            result !== undefined &&
-            typeof result.then === 'function'
-          ) {
-            result.then(undefined, handleNext)
-          }
-        } catch (err) {
-          handleNext(err)
-        }
-        return
+      // Re-derive rather than carry a snapshot forward: a middleware that
+      // rewrote req.url leaves req.path describing the previous request, and
+      // the frame below measures its prefix against req.url.
+      if (req.url !== pathSource) {
+        pathSource = req.url
+        req.path = parseUrl(req.url).path
       }
 
-      if (res.writableEnded) return
-      if (next !== undefined) return next()
-      finalhandler(undefined, req, res, handleNext)
+      while (cursor >= limit) {
+        if (
+          mountIndex < matchedCount &&
+          globalIndex >= matchedMounts[mountIndex].globalsBefore
+        ) {
+          // Leave the previous frame first: each mount strips its prefix off
+          // the whole request, not off what the mount before it left behind.
+          if (frameEntered) leaveFrame()
+          const mount = matchedMounts[mountIndex++]
+          const segments = mount.segments
+          // Derived from the url as it stands, not from a request-entry
+          // snapshot: an earlier middleware may have rewritten it, and the
+          // frame has to strip the prefix off what is actually there.
+          frameSourceUrl = req.url
+          frameSourcePath = req.path
+          const originUrl = toOriginForm(frameSourceUrl)
+          const urlPrefixEnd = getSegmentEnd(originUrl, segments)
+          framePrefix = originUrl.substring(0, urlPrefixEnd)
+          req.baseUrl = entryBaseUrl + framePrefix
+          req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
+          frameUrl = req.url
+          // Without collapsing, the path is the url's path half and both walks
+          // stop at the same delimiter, so the second one is derivable. The
+          // `desyncs` sweep in test/mount-invariant.js is what holds this: it
+          // fails if url and path ever stop describing the same resource.
+          const pathPrefixEnd = ignoreDuplicateSlashes
+            ? getSegmentEnd(frameSourcePath, segments)
+            : urlPrefixEnd < frameSourcePath.length
+              ? urlPrefixEnd
+              : frameSourcePath.length
+          req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
+          pathSource = req.url
+          frameEntered = true
+          current = mount.mw
+          cursor = 0
+          limit = mount.mw.length
+          continue
+        }
+
+        if (globalIndex < globalCount) {
+          if (frameEntered) leaveFrame()
+          current = globalMiddlewares
+          cursor = globalIndex
+          globalIndex =
+            mountIndex < matchedCount
+              ? matchedMounts[mountIndex].globalsBefore
+              : globalCount
+          limit = globalIndex
+          continue
+        }
+
+        if (!routeStarted) {
+          routeStarted = true
+          if (frameEntered) leaveFrame()
+          current = routeHandlers
+          cursor = 0
+          limit = routeHandlers.length
+          continue
+        }
+
+        if (next !== undefined) return next()
+        return finalhandler(undefined, req, res, handleNext)
+      }
+
+      const middleware = current[cursor++]
+
+      try {
+        const result = middleware(req, res, handleNext)
+        if (
+          result !== null &&
+          result !== undefined &&
+          typeof result.then === 'function'
+        ) {
+          result.then(undefined, handleNext)
+        }
+      } catch (err) {
+        handleNext(err)
+      }
     }
 
     executeLoop()
   }
 
-  handler.use = (path = '/', ...fns) => {
-    if (typeof path === 'function' || typeof path === 'boolean') {
-      const middlewares = [path, ...fns].filter(Boolean)
-      for (let i = 0; i < middlewares.length; i++) {
-        globalMiddlewares.push(middlewares[i])
-      }
-    } else if (path === '/') {
-      const middlewares = fns.filter(Boolean)
-      for (let i = 0; i < middlewares.length; i++) {
-        globalMiddlewares.push(middlewares[i])
-      }
-    } else {
-      const normalizedPath = normalizeMountPath(path)
-      const middlewares = fns.filter(Boolean)
-
-      if (middlewares.length > 0) {
-        let pathMiddlewares = middlewaresByPath[normalizedPath]
-
-        if (pathMiddlewares === undefined) {
-          pathMiddlewares = []
-          let mountSegments = 1
-          for (let i = 1; i < normalizedPath.length; i++) {
-            if (normalizedPath.charCodeAt(i) === SLASH_CHAR_CODE) mountSegments++
-          }
-          pathMiddlewares.push((req, _, next) => {
-            const reqPath = req.path
-            mutateRequestUrl(
-              reqPath.indexOf('%') === -1
-                ? normalizedPath
-                : getRawMountPrefix(reqPath, mountSegments),
-              req
-            )
-            next()
-          })
-          middlewaresByPath[normalizedPath] = pathMiddlewares
-          pathMountCount++
-
-          const segment = getFirstPathSegment(normalizedPath)
-          let candidates = mountsByFirstSegment[segment]
-          if (candidates === undefined) {
-            candidates = []
-            mountsByFirstSegment[segment] = candidates
-          }
-          candidates.push({ path: normalizedPath, mw: pathMiddlewares })
-          if (candidates.length > 1) {
-            candidates.sort((a, b) => b.path.length - a.path.length)
-          }
-        }
-
-        for (let i = 0; i < middlewares.length; i++) {
-          pathMiddlewares.push(middlewares[i])
-        }
-      }
+  const registerMount = mountPath => {
+    // One layer per `.use()` call rather than one per distinct path: appending
+    // to an earlier layer would run this middleware at that layer's position,
+    // ahead of anything registered in between.
+    // Consecutive registrations of the same path have nothing in between to
+    // jump ahead of, so they still share a layer.
+    if (
+      lastMount !== null &&
+      lastMount.path === mountPath &&
+      lastMount.globalsBefore === globalMiddlewares.length
+    ) {
+      return lastMount.mw
     }
+
+    const segment = getFirstPathSegment(mountPath)
+    let bucket = mountsByFirstSegment[segment]
+    if (bucket === undefined) {
+      bucket = []
+      mountsByFirstSegment[segment] = bucket
+      soleBucket = lastMount === null ? bucket : null
+    }
+
+    const mount = {
+      path: mountPath,
+      // Segment count rather than key length: a lowercased or percent-encoded
+      // request differs in bytes from the key it matched.
+      segments: countSegments(mountPath),
+      globalsBefore: globalMiddlewares.length,
+      mw: [],
+      solo: null
+    }
+    mount.solo = [mount]
+    bucket.push(mount)
+    lastMount = mount
+
+    return mount.mw
+  }
+
+  handler.use = (path = '/', ...fns) => {
+    const pathIsMiddleware = typeof path !== 'string'
+    const middlewares = (pathIsMiddleware ? [path, ...fns] : fns).filter(Boolean)
+    if (middlewares.length === 0) return handler
+
+    // Normalize before deciding: `//` and `/` are the same mount, and only a
+    // mount that is not the root can strip a prefix.
+    const mountPath = pathIsMiddleware ? '/' : normalizeMountKey(path)
+    const target =
+      mountPath === '/' ? globalMiddlewares : registerMount(mountPath)
+
+    for (let i = 0; i < middlewares.length; i++) {
+      target.push(middlewares[i])
+    }
+
     return handler
   }
 
-  handler.all = addRoute.bind(null, '')
+  handler.all = addRoute.bind(null, ALL_METHODS)
 
   for (let i = 0; i < HTTP_METHODS.length; i++) {
-    const method = HTTP_METHODS[i]
-    handler[method] = addRoute.bind(null, method)
+    handler[HTTP_METHODS[i]] = addRoute.bind(null, [ALL_METHODS[i]])
   }
 
-  handler.prettyPrint = (...args) => router.prettyPrint(...args)
+  handler.prettyPrint = router.prettyPrint.bind(router)
 
   Object.defineProperty(handler, 'routes', {
     get: () => router.routes,

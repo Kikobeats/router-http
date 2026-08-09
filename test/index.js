@@ -1,15 +1,9 @@
 'use strict'
 
-const { default: listen } = require('async-listen')
-const { createServer } = require('http')
+const { connect } = require('net')
 const test = require('ava').default
 
-const got = require('got').extend({
-  retry: 0,
-  responseType: 'text',
-  throwHttpErrors: false,
-  resolveBodyOnly: true
-})
+const { got, createTracker, runServer } = require('./_helpers')
 
 const delay = d => new Promise(resolve => setTimeout(resolve, d))
 
@@ -20,15 +14,70 @@ const final = (err, req, res) => {
   res.end(err ? err.message : 'Not Found')
 }
 
-const closeServer = server =>
-  require('util').promisify(server.close.bind(server))()
+// got/http.get normalize the request target; only a raw socket can send
+// fragments and absolute-form targets on the wire.
+const rawRequest = (url, target, headers = {}) =>
+  new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      const lines = Object.keys(headers).map(key => `${key}: ${headers[key]}\r\n`)
+      socket.write(`GET ${target} HTTP/1.0\r\nHost: ${url.host}\r\n${lines.join('')}\r\n`)
+    })
+    let raw = ''
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => {
+      raw += chunk
+    })
+    socket.on('error', reject)
+    socket.on('end', () => {
+      const separator = raw.indexOf('\r\n\r\n')
+      resolve({
+        statusCode: Number(raw.substring(9, 12)),
+        body: raw.substring(separator + 4)
+      })
+    })
+  })
 
-const runServer = async (t, handler) => {
-  const server = createServer(handler)
-  const url = await listen(server, { host: '127.0.0.1', port: 0 })
-  t.teardown(() => closeServer(server))
-  return url
+const authorize = (req, res, next) => {
+  if (req.headers.authorization !== 'secret') {
+    res.statusCode = 401
+    return res.end('unauthorized')
+  }
+  next()
 }
+
+const assertUnauthorized = async (t, url, path) => {
+  const denied = await got(new URL(path, url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(denied.statusCode, 401, path)
+  t.is(denied.body, 'unauthorized', path)
+}
+
+const assertAuthorized = async (t, url, path) =>
+  t.is(
+    await got(new URL(path, url).toString(), {
+      headers: { authorization: 'secret' }
+    }),
+    'secret data',
+    path
+  )
+
+// A mount guards every request under it: denied without the header, through to
+// the route with it. The axis under test is the spelling of mount vs request.
+const testMountGuards = (title, { options, mount, route, requests }) =>
+  test(title, async t => {
+    const router = Router(final, options)
+
+    router.use(mount, authorize)
+    router.get(route, (req, res) => res.end('secret data'))
+
+    const url = await runServer(t, router)
+
+    for (const request of requests) {
+      await assertUnauthorized(t, url, request)
+      await assertAuthorized(t, url, request)
+    }
+  })
 
 test('throws error if the same route is added twice', t => {
   const router = Router(final)
@@ -42,16 +91,12 @@ test('throws error if the same route is added twice', t => {
   )
 })
 
-test('final handler is required', async t => {
-  t.plan(1)
-  try {
-    Router()
-  } catch (error) {
-    t.is(error.message, 'You should to provide a final handler')
-  }
+test('final handler is required', t => {
+  const error = t.throws(() => Router())
+  t.is(error.message, 'You should to provide a final handler')
 })
 
-test('hide internals', async t => {
+test('hide internals', t => {
   const router = Router(final)
   t.falsy(router.add)
 })
@@ -110,17 +155,19 @@ test('respect req.query', async t => {
   )
 })
 
-test('respect req.search', async t => {
+test('a pre-set req.query is not paired with a url req.search', async t => {
   const router = Router(final)
 
-  router.get('/', (req, res) => res.end(req.search))
+  router.get('/', (req, res) => res.end(`${req.query}|${req.search}`))
 
   const url = await runServer(t, (req, res) => {
-    req.query = '?foo=bar'
+    req.query = 'foo=bar'
     router(req, res)
   })
 
-  t.deepEqual(await got(new URL('/?foo=barz', url).toString()), '?foo=bar')
+  // Filling req.search from the url here would describe a different query
+  // string than the req.query sitting next to it.
+  t.is(await got(new URL('/?foo=barz', url).toString()), 'foo=bar|undefined')
 })
 
 test('`.all`', async t => {
@@ -266,67 +313,39 @@ test('multi `.use`', async t => {
   }
 })
 
-test('catch sync exceptions', async t => {
-  t.plan(8)
+for (const [kind, throwing] of [
+  ['sync', () => { throw new Error('oh no') }],
+  ['async', async () => { throw new Error('oh no') }]
+]) {
+  test(`catch ${kind} exceptions`, async t => {
+    t.plan(8)
 
-  const router = Router((err, req, res) => {
-    t.truthy(err)
-    t.truthy(req)
-    t.truthy(res)
-    res.statusCode = err ? 500 : 404
-    res.end(err ? err.message : 'Not Found')
+    const router = Router((err, req, res) => {
+      t.truthy(err)
+      t.truthy(req)
+      t.truthy(res)
+      res.statusCode = err ? 500 : 404
+      res.end(err ? err.message : 'Not Found')
+    })
+
+    router
+      .use((req, res, next) => {
+        req.one = 'one'
+        next()
+      })
+      .use((req, res, next) => {
+        req.two = 'two'
+        next()
+      })
+      .get('/', throwing)
+      .get('/greetings', (req, res) => res.end('greetings!'))
+
+    const url = await runServer(t, router)
+
+    t.is(await got(url), 'oh no')
+    t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
   })
-
-  router
-    .use((req, res, next) => {
-      req.one = 'one'
-      next()
-    })
-    .use((req, res, next) => {
-      req.two = 'two'
-      next()
-    })
-    .get('/', (req, res) => {
-      throw new Error('oh no')
-    })
-    .get('/greetings', (req, res) => res.end('greetings!'))
-
-  const url = await runServer(t, router)
-
-  t.is(await got(url), 'oh no')
-  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
-})
-
-test('catch async exceptions', async t => {
-  t.plan(8)
-
-  const router = Router((err, req, res) => {
-    t.truthy(err)
-    t.truthy(req)
-    t.truthy(res)
-    res.statusCode = err ? 500 : 404
-    res.end(err ? err.message : 'Not Found')
-  })
-
-  router
-    .use((req, res, next) => {
-      req.one = 'one'
-      next()
-    })
-    .use((req, res, next) => {
-      req.two = 'two'
-      next()
-    })
-    .get('/', async (req, res) => {
-      throw new Error('oh no')
-    })
-    .get('/greetings', (req, res) => res.end('greetings!'))
-
-  const url = await runServer(t, router)
-
-  t.is(await got(url), 'oh no')
-  t.is((await got(url, { resolveBodyOnly: false })).statusCode, 500)
-})
+}
 
 test('`.use` with error', async t => {
   const router = Router(final)
@@ -421,15 +440,6 @@ test('middleware ends response and calls next', async t => {
   })
   router.get('/', (req, res) => {
     res.end('should not reach')
-  })
-  const url = await runServer(t, router)
-  t.is(await got(url), 'done')
-})
-
-test('last middleware ends response', async t => {
-  const router = Router(final)
-  router.get('/', (req, res) => {
-    res.end('done')
   })
   const url = await runServer(t, router)
   t.is(await got(url), 'done')
@@ -550,50 +560,9 @@ test('remove falsy middlewares', async t => {
   t.is(await got(new URL('/foo', url).toString()), 'greetings')
 })
 
-test('middleware runs before routes regardless of declaration order', async t => {
-  const executionOrder = []
-
-  // Declare routes BEFORE middleware
-  const router = Router(final)
-  router
-    .get('/ping', (req, res) => {
-      executionOrder.push('route:/ping')
-      res.end('pong')
-    })
-    .get('/checkout', (req, res) => {
-      executionOrder.push('route:/checkout')
-      res.end('checkout')
-    })
-    .use((req, res, next) => {
-      executionOrder.push('middleware')
-      next()
-    })
-
-  const url = await runServer(t, router)
-
-  // Test /ping
-  executionOrder.length = 0
-  await got(new URL('/ping', url).toString())
-  t.deepEqual(
-    executionOrder,
-    ['middleware', 'route:/ping'],
-    'middleware runs before /ping even though declared after'
-  )
-
-  // Test /checkout
-  executionOrder.length = 0
-  await got(new URL('/checkout', url).toString())
-  t.deepEqual(
-    executionOrder,
-    ['middleware', 'route:/checkout'],
-    'middleware runs before /checkout even though declared after'
-  )
-})
-
 test('middleware declaration order vs route declaration order', async t => {
   const executionOrder = []
 
-  // Compare two routers: one with .use() before .get(), one with .use() after .get()
   const routerUseBefore = Router(final)
   routerUseBefore
     .use((req, res, next) => {
@@ -619,7 +588,6 @@ test('middleware declaration order vs route declaration order', async t => {
   const urlBefore = await runServer(t, routerUseBefore)
   const urlAfter = await runServer(t, routerUseAfter)
 
-  // Test router with .use() declared before .get()
   executionOrder.length = 0
   await got(new URL('/test', urlBefore).toString())
   t.deepEqual(
@@ -628,7 +596,6 @@ test('middleware declaration order vs route declaration order', async t => {
     '.use() before .get() - middleware runs first'
   )
 
-  // Test router with .use() declared after .get()
   executionOrder.length = 0
   await got(new URL('/test', urlAfter).toString())
   t.deepEqual(
@@ -636,20 +603,6 @@ test('middleware declaration order vs route declaration order', async t => {
     ['middleware-after', 'route-after'],
     '.use() after .get() - middleware STILL runs first'
   )
-})
-
-test('req.params is defined even without route match', async t => {
-  const router = Router(final)
-
-  router.use((req, res, next) => {
-    t.truthy(req.params)
-    next()
-  })
-
-  router.get('/match', (req, res) => res.end('match'))
-
-  const url = await runServer(t, router)
-  await got(new URL('/no-match', url).toString())
 })
 
 test('HEAD only calls HEAD handlers if defined', async t => {
@@ -689,18 +642,13 @@ test('pass options to find-my-way', async t => {
   t.is(await got(new URL('/foo', url).toString()), 'foo')
 })
 
-test('exposes find-my-way methods', t => {
-  const router = Router(final)
-  t.is(typeof router.prettyPrint, 'function')
-  t.true(Array.isArray(router.routes))
-})
-
 test('prettyPrint returns a string', t => {
   const router = Router(final)
   router.get('/foo', (req, res) => res.end('foo'))
   const output = router.prettyPrint()
   t.is(typeof output, 'string')
   t.true(output.includes('foo'))
+  t.true(Array.isArray(router.routes))
 })
 
 test('add with no handlers', t => {
@@ -737,43 +685,29 @@ test('handlers can be passed as an array', async t => {
   t.deepEqual(executionOrder, ['middleware1', 'middleware2', 'final'])
 })
 
-test('internal _add method Map initialization', t => {
+test('a single-method route registers once', t => {
   const router = Router(final)
-  // This will hit the !methodMap branch for POST
   router.post('/bar', () => {})
   t.is(router.routes.length, 1)
 })
 
 test('handles bad URLs (invalid encoding)', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(final)
 
   router.get('/hello', (req, res) => {
     res.end('hello')
   })
 
-  const server = createServer(router)
-  const url = await listen(server)
-  t.teardown(() => server.close())
+  const url = await runServer(t, router)
 
-  // invalid % encoding, using raw http to avoid got's URL validation
-  const path = '/hello/%world'
-  const response = await new Promise(resolve => {
-    require('http').get(`${url.origin}${path}`, resolve)
-  })
+  // invalid % encoding; only a raw socket sends it unvalidated
+  const response = await rawRequest(url, '/hello/%world')
 
   t.is(response.statusCode, 404)
 })
 
 test('matches static routes with encoded characters', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(final)
 
   router.get('/hello world', (req, res) => {
     res.end('found')
@@ -786,11 +720,7 @@ test('matches static routes with encoded characters', async t => {
 })
 
 test('decodes parameters in path', async t => {
-  const router = Router((err, req, res) => {
-    if (err) return
-    res.statusCode = 404
-    res.end('Not Found')
-  })
+  const router = Router(final)
 
   router.get('/greetings/:name', (req, res) => {
     res.end(`Hello, ${req.params.name}`)
@@ -835,32 +765,10 @@ test('.use() sub-router matches base path with query string', async t => {
   )
 })
 
-test('multi-segment .use() mount runs path middleware', async t => {
-  const router = Router(final)
-
-  router.use('/admin/panel', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  const denied = await got(new URL('/admin/panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/admin/panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
+testMountGuards('multi-segment .use() mount runs path middleware', {
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/admin/panel/secret', '/%61dmin/panel/secret']
 })
 
 test('multi-segment .use() mounts a sub-router', async t => {
@@ -878,83 +786,144 @@ test('multi-segment .use() mounts a sub-router', async t => {
   t.is(await got(new URL('/api/v1/info', url).toString()), 'api-info')
 })
 
-test('longest matching .use() mount wins over a shorter prefix', async t => {
+test('every matching .use() mount runs, in registration order', async t => {
   const router = Router(final)
 
   router.use('/admin', (req, res, next) => {
-    req.mount = 'admin'
+    req.ran = ['admin']
     next()
   })
   router.use('/admin/panel', (req, res, next) => {
-    req.mount = 'admin-panel'
+    req.ran.push('admin-panel')
     next()
   })
-  router.get('/admin/settings', (req, res) => res.end(req.mount))
-  router.get('/admin/panel/secret', (req, res) => res.end(req.mount))
+  router.get('/admin/settings', (req, res) => res.end(req.ran.join(' ')))
+  router.get('/admin/panel/secret', (req, res) => res.end(req.ran.join(' ')))
 
   const url = await runServer(t, router)
 
   t.is(await got(new URL('/admin/settings', url).toString()), 'admin')
-  t.is(await got(new URL('/admin/panel/secret', url).toString()), 'admin-panel')
-})
-
-test('.use() trailing-slash mount still runs path middleware', async t => {
-  const router = Router(final)
-
-  router.use('/admin/', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
-  router.get('/admin/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  const denied = await got(new URL('/admin/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
   t.is(
-    await got(new URL('/admin/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'admin admin-panel'
   )
 })
 
-test('.use() path middleware runs for a percent-encoded mount segment', async t => {
+test('mounts under different first segments stay isolated', async t => {
   const router = Router(final)
 
   router.use('/admin', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
+    req.ran = 'admin'
     next()
   })
-  router.get('/admin/secret', (req, res) => res.end('secret data'))
+  router.use('/shop', (req, res, next) => {
+    req.ran = 'shop'
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.ran}|${req.url}`))
+  router.get('/shop/x', (req, res) => res.end(`${req.ran}|${req.url}`))
+  router.get('/other/x', (req, res) => res.end(`${req.ran}|${req.url}`))
 
   const url = await runServer(t, router)
 
-  for (const path of ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']) {
-    const denied = await got(new URL(path, url).toString(), {
-      resolveBodyOnly: false
-    })
-    t.is(denied.statusCode, 401, `${path} should be unauthorized`)
-    t.is(denied.body, 'unauthorized')
+  t.is(await got(new URL('/admin/x', url).toString()), 'admin|/admin/x')
+  t.is(await got(new URL('/shop/x', url).toString()), 'shop|/shop/x')
+  t.is(await got(new URL('/other/x', url).toString()), 'undefined|/other/x')
+})
 
-    t.is(
-      await got(new URL(path, url).toString(), {
-        headers: { authorization: 'secret' }
-      }),
-      'secret data',
-      `${path} should reach the handler after auth`
-    )
-  }
+test('a shorter mount registered later still runs after the longer one', async t => {
+  const router = Router(final)
+
+  router.use('/admin/panel', (req, res, next) => {
+    req.ran = ['admin-panel']
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    req.ran.push('admin')
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) => res.end(req.ran.join(' ')))
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'admin-panel admin'
+  )
+})
+
+test('each mount sees the request rooted at its own mount path', async t => {
+  const router = Router(final)
+  const seen = []
+
+  router.use('/admin', (req, res, next) => {
+    seen.push(`outer url=${req.url} baseUrl=${req.baseUrl}`)
+    next()
+  })
+  router.use('/admin/panel', (req, res, next) => {
+    seen.push(`inner url=${req.url} baseUrl=${req.baseUrl}`)
+    next()
+  })
+  router.get('/admin/panel/secret', (req, res) =>
+    res.end(`${seen.join(' | ')} | route url=${req.url} baseUrl=${req.baseUrl}`)
+  )
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/panel/secret', url).toString()),
+    'outer url=/panel/secret baseUrl=/admin | ' +
+      'inner url=/secret baseUrl=/admin/panel | ' +
+      'route url=/admin/panel/secret baseUrl='
+  )
+})
+
+test('req.baseUrl accumulates through a mounted sub-router', async t => {
+  const child = Router(final)
+  child.use('/panel', (req, res) => res.end(`${req.baseUrl}|${req.url}`))
+
+  const parent = Router(final)
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/panel/x', url).toString()), '/admin/panel|/x')
+})
+
+test('req.originalUrl keeps the target the client sent', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin/x', (req, res) => res.end(req.originalUrl))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x?q=1', url).toString()), '/admin/x?q=1')
+})
+
+test('an error handler sees the unstripped request', async t => {
+  const router = Router((err, req, res) => res.end(`${err.message}|${req.url}`))
+
+  router.use('/admin', () => {
+    throw new Error('boom')
+  })
+  router.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), 'boom|/admin/x')
+})
+
+testMountGuards('.use() trailing-slash mount still runs path middleware', {
+  mount: '/admin/',
+  route: '/admin/secret',
+  requests: ['/admin/secret']
+})
+
+testMountGuards('.use() path middleware runs for a percent-encoded mount segment', {
+  mount: '/admin',
+  route: '/admin/secret',
+  requests: ['/admin/secret', '/%61dmin/secret', '/a%64min/secret']
 })
 
 test('.use() strips an encoded mount before a nested handler sees the path', async t => {
@@ -975,34 +944,6 @@ test('.use() strips an encoded mount before a nested handler sees the path', asy
   )
 })
 
-test('.use() multi-segment encoded mount still runs path middleware', async t => {
-  const router = Router(final)
-
-  router.use('/admin/panel', (req, res, next) => {
-    if (req.headers.authorization !== 'secret') {
-      res.statusCode = 401
-      return res.end('unauthorized')
-    }
-    next()
-  })
-  router.get('/admin/panel/secret', (req, res) => res.end('secret data'))
-
-  const url = await runServer(t, router)
-
-  const denied = await got(new URL('/%61dmin/panel/secret', url).toString(), {
-    resolveBodyOnly: false
-  })
-  t.is(denied.statusCode, 401)
-  t.is(denied.body, 'unauthorized')
-
-  t.is(
-    await got(new URL('/%61dmin/panel/secret', url).toString(), {
-      headers: { authorization: 'secret' }
-    }),
-    'secret data'
-  )
-})
-
 test('.use() does not treat %2F as a mount separator', async t => {
   const router = Router(final)
   let mounted = false
@@ -1015,14 +956,495 @@ test('.use() does not treat %2F as a mount separator', async t => {
 
   const url = await runServer(t, router)
 
-  mounted = false
   const encoded = await got(new URL('/admin%2Fpanel/secret', url).toString(), {
     resolveBodyOnly: false
   })
   t.is(encoded.statusCode, 404)
   t.false(mounted, 'encoded slash must not match /admin/panel mount')
 
-  mounted = false
   t.is(await got(new URL('/admin/panel/secret', url).toString()), 'panel')
   t.true(mounted)
+})
+
+testMountGuards('.use() still runs when caseSensitive:false matches the route', {
+  options: { caseSensitive: false },
+  mount: '/admin',
+  route: '/admin/secret',
+  requests: ['/Admin/secret']
+})
+
+test('onBadUrl handler does not crash the request', async t => {
+  const router = Router(final, {
+    onBadUrl: (path, req, res) => {
+      res.statusCode = 400
+      res.end(`bad:${path}`)
+    }
+  })
+
+  router.get('/hello/:name', (req, res) => res.end(req.params.name))
+
+  const url = await runServer(t, router)
+
+  // invalid % encoding; only a raw socket sends it unvalidated
+  const res = await rawRequest(url, '/hello/%world')
+
+  t.is(res.statusCode, 400)
+  t.is(res.body, 'bad:/hello/%world')
+})
+
+test('onMaxParamLength handler does not crash the request', async t => {
+  const router = Router(final, {
+    maxParamLength: 3,
+    onMaxParamLength: (path, req, res) => {
+      res.statusCode = 414
+      res.end(`long:${path}`)
+    }
+  })
+
+  router.get('/hello/:name', (req, res) => res.end(req.params.name))
+
+  const url = await runServer(t, router)
+  const res = await got(new URL('/hello/abcd', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(res.statusCode, 414)
+  t.is(res.body, 'long:/hello/abcd')
+})
+
+test('.use() still runs when a fragment truncates the route path', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.get('/admin', (req, res) => res.end('secret data'))
+
+  const url = await runServer(t, router)
+
+  const denied = await rawRequest(url, '/admin#x')
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  const allowed = await rawRequest(url, '/admin#x', { authorization: 'secret' })
+  t.is(allowed.statusCode, 200)
+  t.is(allowed.body, 'secret data')
+})
+
+test('.use() still runs for absolute-form request targets', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.use('/admin', (req, res) => res.end(`${req.path}|${req.url}|${req.baseUrl}`))
+
+  const url = await runServer(t, router)
+  const target = `http://${url.host}/admin/secret`
+
+  const denied = await rawRequest(url, target)
+  t.is(denied.statusCode, 401)
+  t.is(denied.body, 'unauthorized')
+
+  const allowed = await rawRequest(url, target, { authorization: 'secret' })
+  t.is(allowed.statusCode, 200)
+  t.is(allowed.body, '/secret|/secret|/admin')
+})
+
+test('absolute-form request targets keep the query string', async t => {
+  const router = Router(final)
+
+  router.get('/hello', (req, res) => res.end(`${req.path}|${req.query}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, `http://${url.host}/hello?name=kiko`)
+
+  t.is(res.statusCode, 200)
+  t.is(res.body, '/hello|name=kiko')
+})
+
+test('req.url is untouched when no mount matches', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.get('/hello', (req, res) => res.end(req.url))
+
+  const url = await runServer(t, (req, res) =>
+    router(req, res, () => res.end(`downstream:${req.url}`))
+  )
+
+  t.is(await got(new URL('/a//b', url).toString()), 'downstream:/a//b')
+  t.is(await got(new URL('/hello', url).toString()), '/hello')
+})
+
+test('a `?` inside a fragment is not exposed as req.query', async t => {
+  const router = Router(final)
+
+  router.get('/api/user', (req, res) => res.end(`${req.path}|${req.query}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/api/user#?admin=true')
+
+  t.is(res.body, '/api/user|null')
+})
+
+test('a query after a semicolon path parameter is still req.query', async t => {
+  const router = Router(final, { useSemicolonDelimiter: true })
+
+  router.get('/foo', (req, res) =>
+    res.end(`${req.path}|${req.query}|${req.search}`)
+  )
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/foo;sid=1?a=2', url).toString()), '/foo|a=2|?a=2')
+})
+
+test('ignoreDuplicateSlashes leaves the query string intact', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.get('/go', (req, res) => res.end(req.query))
+
+  const url = await runServer(t, router)
+  const target = `${url.origin}/go?redirect=https://example.com/b`
+
+  t.is(await got(target), 'redirect=https://example.com/b')
+})
+
+test('req.path follows a req.url rewritten before a mount', async t => {
+  const router = Router(final)
+  const seen = []
+
+  router.use((req, res, next) => {
+    req.url = '/x'
+    next()
+  })
+  router.use('/admin/panel', (req, res, next) => {
+    seen.push(`mount ${req.url}|${req.path}`)
+    next()
+  })
+  router.get('/admin/panel/y', (req, res) => {
+    seen.push(`route ${req.url}|${req.path}`)
+    res.end(seen.join(' '))
+  })
+
+  const url = await runServer(t, router)
+
+  // The mount measures its prefix against the rewritten url, so req.path has
+  // to describe that url too — not the one the request arrived with.
+  t.is(await got(new URL('/admin/panel/y', url).toString()), 'mount /|/ route /x|/x')
+})
+
+test('req.url is untouched when a global middleware diverts', async t => {
+  const router = Router(final, { ignoreDuplicateSlashes: true })
+
+  router.use((req, res, next) => next('router'))
+  router.use('/admin', (req, res, next) => next())
+  router.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const url = await runServer(t, (req, res) =>
+    router(req, res, () => res.end(`parent:${req.url}`))
+  )
+
+  t.is(await got(new URL('/admin//x', url).toString()), 'parent:/admin//x')
+})
+
+test('req.path mirrors ignoreTrailingSlash', async t => {
+  const router = Router(final, { ignoreTrailingSlash: true })
+
+  router.get('/admin', (req, res) => res.end(req.path))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/', url).toString()), '/admin')
+  t.is(await got(new URL('/admin', url).toString()), '/admin')
+})
+
+testMountGuards('.use() still runs for a mount registered with duplicate slashes', {
+  options: { ignoreDuplicateSlashes: true },
+  mount: '/admin//panel',
+  route: '/admin//panel/secret',
+  requests: ['/admin/panel/secret']
+})
+
+testMountGuards('.use() still runs for a mount registered with a trailing slash', {
+  options: { ignoreTrailingSlash: true },
+  mount: '/admin/',
+  route: '/admin/secret/',
+  requests: ['/admin/secret']
+})
+
+test('a diverting router leaves no normalization state for the next one', async t => {
+  const diverting = Router(final, { ignoreDuplicateSlashes: true })
+  diverting.use((req, res, next) => next('router'))
+  diverting.use('/admin', (req, res, next) => next())
+  diverting.get('/admin/x', (req, res) => res.end('unreachable'))
+
+  const plain = Router(final)
+  plain.use('/admin', (req, res) => res.end(req.url))
+
+  const url = await runServer(t, (req, res) =>
+    diverting(req, res, () => plain(req, res))
+  )
+
+  t.is(await got(new URL('/admin//x', url).toString()), '//x')
+})
+
+test('respects a pre-set req.search', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => res.end(`${req.search}|${req.query}`))
+
+  const url = await runServer(t, (req, res) => {
+    req.search = '?kept=1'
+    router(req, res)
+  })
+
+  t.is(await got(new URL('/?foo=bar', url).toString()), '?kept=1|undefined')
+})
+
+// Truthy rather than `true`: the option is coerced with `!!`, so this also
+// pins that nothing starts comparing it with `=== true`.
+testMountGuards('.use() still runs when useSemicolonDelimiter is truthy', {
+  options: { useSemicolonDelimiter: 1 },
+  mount: '/admin',
+  route: '/admin',
+  requests: ['/admin;sid=1']
+})
+
+testMountGuards('.use() still runs when ignoreDuplicateSlashes is truthy', {
+  options: { ignoreDuplicateSlashes: 1 },
+  mount: '/admin/panel',
+  route: '/admin/panel/secret',
+  requests: ['/admin//panel/secret']
+})
+
+testMountGuards('.use() still runs when caseSensitive is a falsy non-boolean', {
+  options: { caseSensitive: 0 },
+  mount: '/Admin',
+  route: '/Admin/secret',
+  requests: ['/admin/secret']
+})
+
+test('.use() keeps a leading slash when stripping a semicolon path', async t => {
+  const router = Router(final, { useSemicolonDelimiter: true })
+
+  router.use('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin;sid=1', url).toString()), '/;sid=1|/')
+})
+
+test('.use() keeps a leading slash when stripping a fragment path', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/admin#x')
+
+  t.is(res.body, '/#x|/')
+})
+
+test('a mounted sub-router keeps the trailing slash in its tail', async t => {
+  const child = Router(final)
+  child.get('/x/', (req, res) => res.end('child'))
+
+  const parent = Router(final, { ignoreTrailingSlash: true })
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/x/', url).toString()), 'child')
+})
+
+test('a mounted sub-router keeps duplicate slashes in its tail', async t => {
+  const child = Router(final)
+  child.use((req, res) => res.end(req.url))
+
+  const parent = Router(final, { ignoreDuplicateSlashes: true })
+  parent.use('/admin', child)
+
+  const url = await runServer(t, parent)
+
+  t.is(await got(new URL('/admin/a//b', url).toString()), '/a//b')
+})
+
+test('.use() treats a `//` mount as global', async t => {
+  const router = Router(final)
+
+  router.use('//', (req, res, next) => {
+    req.mounted = true
+    next()
+  })
+  router.get('/x', (req, res) => res.end(String(req.mounted)))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/x', url).toString()), 'true')
+})
+
+test('req.query ends at a fragment', async t => {
+  const router = Router(final)
+
+  router.get('/a', (req, res) => res.end(`${req.query}|${req.search}`))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, '/a?b=1#frag')
+
+  t.is(res.body, 'b=1|?b=1')
+})
+
+test('a second router re-parses the query after req.url is rewritten', async t => {
+  const first = Router(final)
+  const second = Router(final)
+  second.get('/b', (req, res) => res.end(String(req.query)))
+
+  const url = await runServer(t, (req, res) =>
+    first(req, res, () => {
+      req.url = '/b?x=1'
+      second(req, res)
+    })
+  )
+
+  t.is(await got(new URL('/a', url).toString()), 'x=1')
+})
+
+test('re-registering a mount path keeps registration order', async t => {
+  const router = Router(final)
+  const { ran, mark } = createTracker()
+
+  router.use('/admin/panel', mark('audit'))
+  router.use('/admin', mark('authorize'))
+  router.use('/admin/panel', mark('log'))
+  router.get('/admin/panel/x', (req, res) => res.end(ran.join(' ')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/panel/x', url).toString()), 'audit authorize log')
+})
+
+test('a global registered after a mount runs after it', async t => {
+  const router = Router(final)
+  const { ran, mark } = createTracker()
+
+  router.use('/admin', mark('authorize'))
+  router.use(mark('logger'))
+  router.get('/admin/x', (req, res) => res.end(ran.join(' ')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), 'authorize logger')
+})
+
+test('a global between two mounts sees the unstripped request', async t => {
+  const router = Router(final)
+  const seen = []
+
+  router.use((req, res, next) => {
+    seen.push(`g1 ${req.url}`)
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    seen.push(`mount ${req.url}`)
+    next()
+  })
+  router.use((req, res, next) => {
+    seen.push(`g2 ${req.url}`)
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(seen.join(' | ')))
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/x', url).toString()),
+    'g1 /admin/x | mount /x | g2 /admin/x'
+  )
+})
+
+test('next(null) continues the chain', async t => {
+  const router = Router(final)
+
+  router.use((req, res, next) => next(null))
+  router.get('/a', (req, res) => res.end('route ok'))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a', url).toString()), 'route ok')
+})
+
+test("next('route') skips the rest of the current layer", async t => {
+  const router = Router(final)
+
+  router.get(
+    '/a',
+    (req, res, next) => next('route'),
+    (req, res) => res.end('skipped')
+  )
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a', url).toString()), 'Not Found')
+})
+
+test('a url rewritten before a mount survives the frame', async t => {
+  const router = Router(final)
+
+  router.use((req, res, next) => {
+    req.url = '/admin/other'
+    next()
+  })
+  router.use('/admin', (req, res, next) => {
+    req.seen = req.url
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.seen}|${req.url}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), '/other|/admin/other')
+})
+
+test('a url rewritten inside a mount survives leaving it', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    req.url = '/rewritten'
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+
+  t.is(
+    await got(new URL('/admin/x', url).toString()),
+    '/admin/rewritten|/admin/rewritten'
+  )
+})
+
+test("next('route') from middleware continues to the next layer", async t => {
+  const router = Router(final)
+  const { ran, mark } = createTracker()
+
+  router.use((req, res, next) => {
+    ran.push('g1')
+    next('route')
+  })
+  router.use(mark('g2'))
+  router.use('/a', mark('m1'))
+  router.use(mark('g3'))
+  router.get('/a/b', (req, res) => res.end(ran.join(',')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/a/b', url).toString()), 'g1,g2,m1,g3')
+})
+
+test('consecutive .use() on the same path keep running in order', async t => {
+  const router = Router(final)
+  const { ran, mark } = createTracker()
+
+  router.use('/api', mark('cors'))
+  router.use('/api', mark('auth'))
+  router.get('/api/x', (req, res) => res.end(ran.join(',')))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/api/x', url).toString()), 'cors,auth')
 })

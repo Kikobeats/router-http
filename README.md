@@ -13,6 +13,7 @@
     - [Starting the server](#starting-the-server)
   - [Advanced](#advanced)
     - [Request object](#request-object)
+    - [Mounted middleware](#mounted-middleware)
     - [Print routes](#print-routes)
     - [Nested routers](#nested-routers)
     - [Skipping to parent router](#skipping-to-parent-router)
@@ -20,25 +21,24 @@
   - [Related](#related)
   - [License](#license)
 
-
 A middleware-style router similar to [express router](https://github.com/pillarjs/router), with key advantages:
 
-- **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a trie-based router with constant O(1) lookup time.
+- **Predictable performance** – Backed by [find-my-way](https://github.com/delvedor/find-my-way), a radix-trie router whose lookup cost tracks the path length rather than the number of routes.
 - **Battle-tested** – Well maintained with comprehensive test coverage.
-- **Lightweight** – Only 1.3 kB (minifized + gzipped)
+- **Lightweight** – Around 2 kB (minified + gzipped)
 
 ## Why not Express router?
 
-Express uses regex-based route matching that degrades linearly as routes increase:
+Express matches routes by walking a list of regexes, so dispatch slows down as routes are added. Requests here hit the last route registered — the worst case for a list, and no different from the first for a trie:
 
 | Routes | `express@router` | `router-http` |
-|--------|-----------|---------------|
-| 5      | ~10.7M ops/sec | **~13.7M ops/sec** |
-| 10     | ~6.5M ops/sec | **~13.7M ops/sec** |
-| 50     | ~1.5M ops/sec | **~11.5M ops/sec** |
-| 1000   | ~41K ops/sec | **~10.6M ops/sec** |
+|--------|------------------|---------------|
+| 5 | ~2.6M ops/sec | **~8.5M ops/sec** |
+| 10 | ~2.1M ops/sec | **~8.5M ops/sec** |
+| 50 | ~891K ops/sec | **~7.6M ops/sec** |
+| 1000 | ~23K ops/sec | **~7.0M ops/sec** |
 
-In contrast, **router-http** is backed by a trie-based implementation that maintains nearly constant performance regardless of the number of routes.
+Across that range the express router loses 113× of its throughput; **router-http** loses 1.2×. Regenerate the table with `npm run benchmark:routes`.
 
 ## Installation
 
@@ -77,7 +77,7 @@ const router = createRouter(finalHandler, {
 
 ### Declaring routes
 
-Use HTTP verb methods to define your routes:
+Use HTTP verb methods to define your routes. Every method returns the router, so `.get()`, `.post()` and `.use()` chain in any combination:
 
 ```js
 router
@@ -96,14 +96,14 @@ router.all('/ping', (req, res) => res.end('pong'))
 The dynamic segments will be captured using the `:param` syntax, with parameters accessible via `req.params`:
 
 ```js
-router.get('/users/:id', (req, res) => {
-  res.end(`User ID: ${req.params.id}`)
-})
-
-router.get('/posts/:year/:month', (req, res) => {
-  const { year, month } = req.params
-  res.end(`Posts from ${month}/${year}`)
-})
+router
+  .get('/users/:id', (req, res) => {
+    res.end(`User ID: ${req.params.id}`)
+  })
+  .get('/posts/:year/:month', (req, res) => {
+    const { year, month } = req.params
+    res.end(`Posts from ${month}/${year}`)
+  })
 ```
 
 See [Request object](#request-object) for details on how to access route parameters and other useful properties added to `req`.
@@ -148,12 +148,6 @@ The router is a standard request handler. Pass it to `http.createServer`:
 ```js
 const http = require('http')
 
-console.log(router.prettyPrint())
-// └── / (GET)
-//     ├── favicon.ico (GET)
-//     └── user/
-//         └── :id (GET)
-
 http.createServer(router).listen(3000)
 ```
 
@@ -169,8 +163,44 @@ The router adds these properties to `req`:
 | `req.params` | Route parameters object |
 | `req.query` | Raw query string (after `?`) |
 | `req.search` | Raw search string (including `?`) |
+| `req.baseUrl` | Mount prefix while a mounted middleware runs; the inherited prefix otherwise, `''` at the top level |
+| `req.originalUrl` | The request target as the client sent it |
 
-> `req.query` and `req.search` are only set if not already present.
+`req.path` ends where find-my-way stops matching: at the first `?` or `#`, or `;` with `useSemicolonDelimiter`. Absolute-form targets like `GET http://example.com/foo` are reduced to origin form, and `ignoreDuplicateSlashes` / `ignoreTrailingSlash` are applied. It stays percent-encoded.
+
+`req.query` and `req.search` are whatever sits between `?` and `#` — a `?` inside a fragment is fragment content, not a query. Being two shapes of one string, they are set together and only if neither already holds a value.
+
+### Mounted middleware
+
+`.use(path, ...fns)` mounts middleware under a path prefix, following Express semantics.
+
+Every mount whose prefix matches runs, in registration order — not just the longest one:
+
+```js
+router
+  .use('/admin', authorize)
+  .use('/admin/panel', audit)
+  .get('/admin/panel/secret', handler)
+
+// GET /admin/panel/secret runs authorize, then audit, then handler
+```
+
+While a mount runs, the request is rooted at that mount: `req.url` and `req.path` have the prefix removed and `req.baseUrl` holds it. The frame is undone afterwards, so the route handler sees the full request:
+
+```js
+router
+  .use('/admin', (req, res, next) => {
+    req.baseUrl // '/admin'
+    req.url     // '/panel/secret'
+    next()
+  })
+  .get('/admin/panel/secret', (req, res) => {
+    req.baseUrl // ''
+    req.url     // '/admin/panel/secret'
+  })
+```
+
+That is what makes `.use(path, subRouter)` work: the sub-router runs inside the frame and sees itself at the root. `req.baseUrl` accumulates through nesting, and the tail keeps the slashes the client sent — duplicates and trailing included, even when this router is collapsing them.
 
 ### Print routes
 
@@ -190,10 +220,9 @@ console.log(router.prettyPrint())
 http.createServer(router).listen(3000)
 ```
 
-The printed output shows the nested structure of your routes along with their registered HTTP methods. This works for both flat and deeply nested routers, including those mounted via `.use()`.
+The printed output shows the nested structure of your routes along with their registered HTTP methods. It covers the routes registered on this router only — a sub-router mounted with `.use()` holds its own routing table and prints its own tree. The `routes` getter has the same scope.
 
 See more in [find-my-way prettyPrint documentation](https://github.com/delvedor/find-my-way#routerprettyprint).
-
 
 ### Nested routers
 
@@ -243,41 +272,22 @@ beta.use((req, res, next) => {
 
 beta.get('/feature', (req, res) => res.end('Beta feature'))
 
-router.use('/v1', beta)
-router.get('/v1/feature', (req, res) => res.end('Stable feature'))
+router
+  .use('/v1', beta)
+  .get('/v1/feature', (req, res) => res.end('Stable feature'))
 ```
 
 ## Benchmark
 
-With all the improvements, **router-http** is approximately 30% faster than the express router:
+Over HTTP, against the same two-middleware app in [benchmark](/benchmark). Best of three interleaved 30s runs, `wrk -t8 -c100`, node v26.6.0:
 
-**express@5.2.1**
+| | Requests/sec |
+|---|---|
+| **router-http** | **110,983** |
+| polka | 108,444 |
+| express | 85,985 |
 
-```
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     1.23ms    1.40ms  96.27ms   99.61%
-    Req/Sec    10.15k   615.89    11.07k    86.24%
-  2430687 requests in 30.10s, 356.98MB read
-Requests/sec:  80752.48
-Transfer/sec:     11.86MB
-```
-
-**router-http**
-
-```
-Running 30s test @ http://localhost:3000/user/123
-  8 threads and 100 connections
-  Thread Stats   Avg      Stdev     Max   +/- Stdev
-    Latency     0.97ms    1.27ms  84.82ms   99.77%
-    Req/Sec    12.91k     1.07k   14.67k    71.51%
-  3092927 requests in 30.10s, 386.40MB read
-Requests/sec: 102751.65
-Transfer/sec:     12.84MB
-```
-
-See [benchmark](/benchmark) for details.
+About 29% ahead of the express router. Reproduce with `npm run benchmark` — it warms each server, interleaves the rounds so a busy moment cannot land on one of them, and prints the load average alongside the result.
 
 ## Related
 

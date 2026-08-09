@@ -28,4 +28,4 @@ router
 
 console.log(router.prettyPrint())
 
-http.createServer(router).listen(3000)
+http.createServer(router).listen(process.env.PORT || 3000)
