@@ -455,7 +455,7 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     // to an earlier layer would run this middleware at that layer's position,
     // ahead of anything registered in between.
     // Consecutive registrations of the same path have nothing in between to
-    // jump ahead of, so they still share a layer and keep matching allocation-free.
+    // jump ahead of, so they still share a layer.
     if (
       lastMount !== null &&
       lastMount.path === mountPath &&
