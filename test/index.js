@@ -1066,15 +1066,40 @@ test('absolute-form query slashes are not a path', async t => {
 
   const url = await runServer(t, router)
 
-  for (const target of [
-    `http://${url.host}?next=/admin`,
-    `https://${url.host}?next=/admin`,
-    `HTTP://${url.host}?next=/admin`,
-    `http://${url.host}?next=//admin/settings&return=/`
+  for (const [target, body] of [
+    [`http://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [`https://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [`HTTP://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [
+      `http://${url.host}?next=//admin/settings&return=/`,
+      'root|/|next=//admin/settings&return=/'
+    ]
   ]) {
     const res = await rawRequest(url, target)
     t.is(res.statusCode, 200, target)
-    t.true(res.body.startsWith('root|/|'), target)
+    t.is(res.body, body, target)
+  }
+})
+
+test('.use() does not run for an absolute-form query slash', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.get('/', (req, res) => res.end(`root|${req.path}|${req.query}`))
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const url = await runServer(t, router)
+
+  for (const [target, body] of [
+    [`http://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [
+      `http://${url.host}?next=//admin/settings&return=/`,
+      'root|/|next=//admin/settings&return=/'
+    ]
+  ]) {
+    const res = await rawRequest(url, target)
+    t.is(res.statusCode, 200, target)
+    t.is(res.body, body, target)
   }
 })
 

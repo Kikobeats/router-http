@@ -78,11 +78,12 @@ const countSegments = mountPath => {
   return count
 }
 
-// RFC 7230 §5.3.2 absolute-form. Same rewrite find-my-way 9.9.0 applies: a
-// slash in the query is not the path (`http://host?next=/admin` → `/?next=…`),
-// an empty path is `/`, and an invalid target is left untouched so find() can
-// still run onBadUrl. The previous /^https?:\/\/.*?\// rewrite treated the
-// first slash anywhere after `://` as the path, including inside `?` / `#`.
+// RFC 7230 §5.3.2 absolute-form. Copy of find-my-way 9.9.0's unexported
+// getPathFromAbsoluteUrl — diff it on bumps. A slash in the query is not the
+// path (`http://host?next=/admin` → `/?next=…`), an empty path is `/`, and an
+// invalid target is left untouched so find() can still run onBadUrl. The
+// previous /^https?:\/\/.*?\// rewrite treated the first slash anywhere after
+// `://` as the path, including inside `?` / `#`.
 const getPathFromAbsoluteUrl = url => {
   const schemeEnd = url.indexOf('://')
   if (schemeEnd === -1) return url
