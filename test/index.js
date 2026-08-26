@@ -1058,6 +1058,87 @@ test('absolute-form request targets keep the query string', async t => {
   t.is(res.body, '/hello|name=kiko')
 })
 
+test('absolute-form query slashes are not a path', async t => {
+  const router = Router(final)
+
+  router.use('/admin', authorize)
+  router.get('/', (req, res) => res.end(`root|${req.path}|${req.query}`))
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const url = await runServer(t, router)
+
+  for (const [target, body] of [
+    [`http://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [`https://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [`HTTP://${url.host}?next=/admin`, 'root|/|next=/admin'],
+    [
+      `http://${url.host}?next=//admin/settings&return=/`,
+      'root|/|next=//admin/settings&return=/'
+    ]
+  ]) {
+    const res = await rawRequest(url, target)
+    t.is(res.statusCode, 200, target)
+    t.is(res.body, body, target)
+  }
+})
+
+test('absolute-form empty path is the root', async t => {
+  const router = Router(final)
+
+  router.get('/', (req, res) => res.end(`${req.path}|${req.query}`))
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const url = await runServer(t, router)
+  const res = await rawRequest(url, `http://${url.host}`)
+
+  t.is(res.statusCode, 200)
+  t.is(res.body, '/|null')
+})
+
+test('invalid absolute-form targets use onBadUrl', async t => {
+  const router = Router(final, {
+    onBadUrl: (path, req, res) => {
+      res.statusCode = 400
+      res.end(`bad:${path}`)
+    }
+  })
+
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const url = await runServer(t, router)
+
+  for (const target of ['http:///admin', 'http://localhost:invalid/admin']) {
+    const res = await rawRequest(url, target)
+    t.is(res.statusCode, 400, target)
+    t.true(res.body.startsWith('bad:'), target)
+  }
+})
+
+test('a fragment in an absolute-form target does not select /admin', t => {
+  const router = Router(final, {
+    onBadUrl: (path, req, res) => {
+      res.statusCode = 400
+      res.end(`bad:${path}`)
+    }
+  })
+
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const res = {
+    writableEnded: false,
+    statusCode: 200,
+    body: '',
+    end (body) {
+      this.body = body
+      this.writableEnded = true
+    }
+  }
+  router({ method: 'GET', url: 'http://example.com#next=/admin' }, res)
+
+  t.is(res.statusCode, 400)
+  t.true(res.body.startsWith('bad:'))
+})
+
 test('req.url is untouched when no mount matches', async t => {
   const router = Router(final, { ignoreDuplicateSlashes: true })
 

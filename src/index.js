@@ -78,13 +78,51 @@ const countSegments = mountPath => {
   return count
 }
 
-// RFC 7230 §5.3.2 absolute-form targets; same rewrite find-my-way applies.
-const ABSOLUTE_FORM_REGEXP = /^https?:\/\/.*?\//
+// Copy of find-my-way 9.9.0's unexported getPathFromAbsoluteUrl; diff it on bumps.
+// A query slash is not the path; invalid targets stay untouched for onBadUrl.
+const getPathFromAbsoluteUrl = url => {
+  const schemeEnd = url.indexOf('://')
+  if (schemeEnd === -1) return url
 
-const toOriginForm = pathname =>
-  pathname.charCodeAt(0) === SLASH_CHAR_CODE
-    ? pathname
-    : pathname.replace(ABSOLUTE_FORM_REGEXP, '/')
+  const scheme = url.slice(0, schemeEnd).toLowerCase()
+  if (scheme !== 'http' && scheme !== 'https') return url
+
+  const authorityStart = schemeEnd + 3
+  let authorityEnd = url.length
+
+  const pathStart = url.indexOf('/', authorityStart)
+  if (pathStart !== -1) authorityEnd = pathStart
+
+  const queryStart = url.indexOf('?', authorityStart)
+  if (queryStart !== -1 && queryStart < authorityEnd) {
+    authorityEnd = queryStart
+  }
+
+  // Fragments are not valid in a request-target. Do not let a slash after
+  // one be read as the start of the path.
+  if (url.indexOf('#', authorityStart) !== -1 || authorityEnd === authorityStart) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== `${scheme}:` || parsed.host.length === 0) {
+      return null
+    }
+  } catch {
+    return null
+  }
+
+  if (authorityEnd === url.length) return '/'
+  if (authorityEnd === queryStart) return '/' + url.slice(queryStart)
+  return url.slice(pathStart)
+}
+
+const toOriginForm = pathname => {
+  if (pathname.charCodeAt(0) === SLASH_CHAR_CODE) return pathname
+  const origin = getPathFromAbsoluteUrl(pathname)
+  return origin === null ? pathname : origin
+}
 
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // No defaultRoute: it only fires through find-my-way's lookup(), which this
@@ -265,9 +303,13 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     let pathSource = req.url
     if (req.originalUrl === undefined) req.originalUrl = req.url
 
-    let match = router.find(req.method, pathname)
+    // find-my-way still needs the raw target when the rewrite is not
+    // origin-form: a hash-stripped `http://host` would otherwise look valid.
+    const lookupUrl =
+      pathname.charCodeAt(0) === SLASH_CHAR_CODE ? pathname : req.url
+    let match = router.find(req.method, lookupUrl)
     if (match === null && req.method === 'HEAD') {
-      match = router.find('GET', pathname)
+      match = router.find('GET', lookupUrl)
     }
 
     const matchedMounts = matchMounts(pathname)
