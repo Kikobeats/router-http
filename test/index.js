@@ -1103,15 +1103,40 @@ test('invalid absolute-form targets use onBadUrl', async t => {
 
   const url = await runServer(t, router)
 
-  for (const target of [
-    'http:///admin',
-    `http://${url.host}#next=/admin`,
-    'http://localhost:invalid/admin'
-  ]) {
+  // Node's parser rejects a `#` in an absolute-form target before we see it.
+  for (const target of ['http:///admin', 'http://localhost:invalid/admin']) {
     const res = await rawRequest(url, target)
     t.is(res.statusCode, 400, target)
     t.true(res.body.startsWith('bad:'), target)
   }
+})
+
+test('a fragment in an absolute-form target does not select /admin', t => {
+  const router = Router((err, req, res) => {
+    res.statusCode = err ? 500 : 404
+    res.end(err ? err.message : 'nf')
+  }, {
+    onBadUrl: (path, req, res) => {
+      res.statusCode = 400
+      res.end(`bad:${path}`)
+    }
+  })
+
+  router.get('/admin', (req, res) => res.end('admin'))
+
+  const res = {
+    writableEnded: false,
+    statusCode: 200,
+    body: '',
+    end (body) {
+      this.body = body
+      this.writableEnded = true
+    }
+  }
+  router({ method: 'GET', url: 'http://example.com#next=/admin' }, res)
+
+  t.is(res.statusCode, 400)
+  t.true(res.body.startsWith('bad:'))
 })
 
 test('req.url is untouched when no mount matches', async t => {
