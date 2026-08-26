@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### 3.0.3 (2026-08-26)
+
+
+### Bug Fixes
+
+* do not treat query slashes as the path of an absolute-form target ([#39](https://github.com/Kikobeats/router-http/issues/39)) ([472fde1](https://github.com/Kikobeats/router-http/commit/472fde1172523c68d062013e10cbf3884978dd40))
+
 ### 3.0.2 (2026-08-25)
 
 ### 3.0.1 (2026-08-19)
