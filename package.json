@@ -43,7 +43,7 @@
     "finepack": "latest",
     "git-authors-cli": "latest",
     "github-generate-release": "latest",
-    "got": "11",
+    "got": "16",
     "nano-staged": "latest",
     "polka": "~0.5.2",
     "router": "2.2.0",
