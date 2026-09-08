@@ -484,8 +484,17 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
           continue
         }
 
+        // Pass a terminator, not handleNext. A 4-arg Express-style
+        // finalhandler that does `if (!err) return next()` would otherwise
+        // re-enter this branch forever on unmatched top-level requests.
         if (next !== undefined) return next()
-        return finalhandler(undefined, req, res, handleNext)
+        return finalhandler(undefined, req, res, err => {
+          if (err) return finalhandler(err, req, res, next)
+          if (!res.writableEnded) {
+            res.statusCode = 404
+            res.end()
+          }
+        })
       }
 
       const middleware = current[cursor++]

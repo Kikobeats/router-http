@@ -512,6 +512,30 @@ test('unmatched route', async t => {
   t.is(await got(new URL('/users/123', url).toString()), 'Not Found')
 })
 
+test('unmatched request with Express-style final handler does not hang', async t => {
+  const router = Router((error, req, res, next) => {
+    if (!error) return next()
+    res.statusCode = 500
+    res.end(String(error.message || error))
+  })
+  router.get('/only', (req, res) => res.end('ok'))
+  router.get('/boom', (req, res, next) => next(new Error('oh no')))
+
+  const url = await runServer(t, router)
+  const missing = await got(new URL('/missing', url).toString(), {
+    resolveBodyOnly: false,
+    timeout: 2000
+  })
+  t.is(missing.statusCode, 404)
+  t.is(await got(new URL('/only', url).toString()), 'ok')
+
+  const boom = await got(new URL('/boom', url).toString(), {
+    resolveBodyOnly: false
+  })
+  t.is(boom.statusCode, 500)
+  t.is(boom.body, 'oh no')
+})
+
 test("don't interfer with request query", async t => {
   t.plan(5)
 
