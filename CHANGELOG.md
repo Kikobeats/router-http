@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### 3.0.5 (2026-09-09)
+
+
+### Bug Fixes
+
+* stop unmatched Express-style final handlers from looping ([#41](https://github.com/Kikobeats/router-http/issues/41)) ([ee3feb8](https://github.com/Kikobeats/router-http/commit/ee3feb850f6a57b07fd7ba9266886ff1bc205c92))
+
 ### 3.0.4 (2026-09-09)
 
 ### 3.0.3 (2026-08-26)
