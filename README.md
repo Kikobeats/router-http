@@ -1,8 +1,8 @@
 # router-http
 
-![Last version](https://img.shields.io/github/tag/Kikobeats/router-http.svg?style=flat-square)
-[![Coverage Status](https://img.shields.io/coveralls/Kikobeats/router-http.svg?style=flat-square)](https://coveralls.io/github/Kikobeats/router-http)
-[![NPM Status](https://img.shields.io/npm/dm/router-http.svg?style=flat-square)](https://www.npmjs.org/package/router-http)
+[![Last version](https://img.shields.io/github/v/tag/Kikobeats/router-http?style=flat-square)](https://github.com/Kikobeats/router-http/releases)
+[![Coverage Status](https://img.shields.io/coverallsCoverage/github/Kikobeats/router-http?style=flat-square)](https://coveralls.io/github/Kikobeats/router-http)
+[![NPM Status](https://img.shields.io/npm/dm/router-http?style=flat-square)](https://www.npmjs.com/package/router-http)
 
 - [router-http](#router-http)
   - [Why not Express router?](#why-not-express-router)
