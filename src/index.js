@@ -124,6 +124,52 @@ const toOriginForm = pathname => {
   return origin === null ? pathname : origin
 }
 
+// One object for the whole dispatch: the loop and its continuation are
+// shared functions, so a request allocates this state and one callback.
+// A class, not a literal: V8 pretenures literal allocation sites, and on this
+// one it flip-flops and keeps deoptimizing the request path (2x slower).
+class Dispatch {
+  constructor (
+    req,
+    res,
+    next,
+    entryBaseUrl,
+    matchedMounts,
+    routeHandlers,
+    globalCount
+  ) {
+    this.req = req
+    this.res = res
+    this.next = next
+    this.handleNext = undefined
+    // The url req.path was derived from. A middleware may rewrite req.url,
+    // and the two are one fact in two shapes: whatever reads them next has
+    // to see them describing the same request.
+    this.pathSource = req.url
+    this.entryBaseUrl = entryBaseUrl
+    // What the frame removed, so leaving it can put it back rather than
+    // reinstating a snapshot and discarding whatever middleware wrote since.
+    // Only read under `frameEntered`; strings from the start to keep each
+    // slot one type.
+    this.framePrefix = ''
+    this.frameUrl = ''
+    this.frameSourceUrl = ''
+    this.frameSourcePath = ''
+    this.matchedMounts = matchedMounts
+    this.matchedCount = matchedMounts.length
+    this.routeHandlers = routeHandlers
+    this.globalCount = globalCount
+    this.syncCount = 0
+    this.mountIndex = 0
+    this.globalIndex = 0
+    this.routeStarted = false
+    this.frameEntered = false
+    this.current = EMPTY_HANDLERS
+    this.cursor = 0
+    this.limit = 0
+  }
+}
+
 module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
   // No defaultRoute: it only fires through find-my-way's lookup(), which this
   // router never calls. An unmatched path is handled where the match is read.
@@ -292,15 +338,167 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     return handler
   }
 
+  // Extracted because four layer transitions undo a frame; entry has one site
+  // and stays inline.
+  const leaveFrame = d => {
+    const req = d.req
+    d.frameEntered = false
+    req.baseUrl = d.entryBaseUrl
+    if (req.url === d.frameUrl) {
+      req.url = d.frameSourceUrl
+      req.path = d.frameSourcePath
+      d.pathSource = d.frameSourceUrl
+      return
+    }
+    // A middleware rewrote the url inside the frame. Express re-prepends
+    // what it removed, so the edit survives instead of being reverted.
+    req.url = d.framePrefix + (req.url === '/' ? '' : req.url)
+    req.path = parseUrl(req.url).path
+    d.pathSource = req.url
+  }
+
+  // Both exits abandon the remaining middleware and undo the frame, so the
+  // parent router and the error handler see what the client actually sent.
+  // Truthiness, not `!== undefined`: `next(null)` is the ordinary callback
+  // idiom for success and must not be read as a failure.
+  const handleNext = (d, err) => {
+    if (err) {
+      // Express only lets 'route' skip a route's own handler stack; from
+      // middleware it continues to the next layer like a plain next().
+      if (err === 'route') {
+        if (d.routeStarted) d.cursor = d.limit
+        return executeLoop(d)
+      }
+      d.mountIndex = d.matchedCount
+      d.globalIndex = d.globalCount
+      d.routeStarted = true
+      d.limit = 0
+      if (d.frameEntered) leaveFrame(d)
+      if (err !== 'router') return finalhandler(err, d.req, d.res, d.next)
+      if (d.next !== undefined) return d.next()
+      return executeLoop(d)
+    }
+    if (++d.syncCount > SYNC_ITERATION_LIMIT) {
+      d.syncCount = 0
+      return setImmediate(executeLoop, d)
+    }
+    executeLoop(d)
+  }
+
+  // Globals and mount frames interleave by registration order, which is what
+  // `globalsBefore` records. Only a mount runs on a stripped request, so
+  // every other layer restores first: a global sitting between two mounts
+  // belongs to the router, not to whichever frame happened to precede it.
+  const executeLoop = d => {
+    const req = d.req
+    const res = d.res
+    if (res.writableEnded) return
+
+    // Re-derive rather than carry a snapshot forward: a middleware that
+    // rewrote req.url leaves req.path describing the previous request, and
+    // the frame below measures its prefix against req.url.
+    if (req.url !== d.pathSource) {
+      d.pathSource = req.url
+      req.path = parseUrl(req.url).path
+    }
+
+    while (d.cursor >= d.limit) {
+      if (
+        d.mountIndex < d.matchedCount &&
+        d.globalIndex >= d.matchedMounts[d.mountIndex].globalsBefore
+      ) {
+        // Leave the previous frame first: each mount strips its prefix off
+        // the whole request, not off what the mount before it left behind.
+        if (d.frameEntered) leaveFrame(d)
+        const mount = d.matchedMounts[d.mountIndex++]
+        const segments = mount.segments
+        // Derived from the url as it stands, not from a request-entry
+        // snapshot: an earlier middleware may have rewritten it, and the
+        // frame has to strip the prefix off what is actually there.
+        const frameSourceUrl = req.url
+        const frameSourcePath = req.path
+        d.frameSourceUrl = frameSourceUrl
+        d.frameSourcePath = frameSourcePath
+        const originUrl = toOriginForm(frameSourceUrl)
+        const urlPrefixEnd = getSegmentEnd(originUrl, segments)
+        d.framePrefix = originUrl.substring(0, urlPrefixEnd)
+        req.baseUrl = d.entryBaseUrl + d.framePrefix
+        req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
+        d.frameUrl = req.url
+        // Without collapsing, the path is the url's path half and both walks
+        // stop at the same delimiter, so the second one is derivable.
+        // substring clamps an index past the end, so a shorter path needs no
+        // separate bound. The `desyncs` sweep in test/mount-invariant.js is
+        // what holds this: it fails if url and path ever stop describing the
+        // same resource.
+        const pathPrefixEnd = ignoreDuplicateSlashes
+          ? getSegmentEnd(frameSourcePath, segments)
+          : urlPrefixEnd
+        req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
+        d.pathSource = req.url
+        d.frameEntered = true
+        d.current = mount.mw
+        d.cursor = 0
+        d.limit = mount.mw.length
+        continue
+      }
+
+      if (d.globalIndex < d.globalCount) {
+        if (d.frameEntered) leaveFrame(d)
+        d.current = globalMiddlewares
+        d.cursor = d.globalIndex
+        d.globalIndex =
+          d.mountIndex < d.matchedCount
+            ? d.matchedMounts[d.mountIndex].globalsBefore
+            : d.globalCount
+        d.limit = d.globalIndex
+        continue
+      }
+
+      if (!d.routeStarted) {
+        d.routeStarted = true
+        if (d.frameEntered) leaveFrame(d)
+        d.current = d.routeHandlers
+        d.cursor = 0
+        d.limit = d.routeHandlers.length
+        continue
+      }
+
+      // Pass a terminator, not handleNext. A 4-arg Express-style
+      // finalhandler that does `if (!err) return next()` would otherwise
+      // re-enter this branch forever on unmatched top-level requests.
+      const next = d.next
+      if (next !== undefined) return next()
+      return finalhandler(undefined, req, res, err => {
+        if (err) return finalhandler(err, req, res, next)
+        if (!res.writableEnded) {
+          res.statusCode = 404
+          res.end()
+        }
+      })
+    }
+
+    const middleware = d.current[d.cursor++]
+
+    try {
+      const result = middleware(req, res, d.handleNext)
+      if (
+        result !== null &&
+        result !== undefined &&
+        typeof result.then === 'function'
+      ) {
+        result.then(undefined, d.handleNext)
+      }
+    } catch (err) {
+      handleNext(d, err)
+    }
+  }
+
   const handler = (req, res, next) => {
     const urlInfo = parseUrl(req.url)
     const pathname = urlInfo.path
 
     req.path = pathname
-    // The url req.path was derived from. A middleware may rewrite req.url, and
-    // the two are one fact in two shapes: whatever reads them next has to see
-    // them describing the same request.
-    let pathSource = req.url
     if (req.originalUrl === undefined) req.originalUrl = req.url
 
     // find-my-way still needs the raw target when the rewrite is not
@@ -313,7 +511,6 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     }
 
     const matchedMounts = matchMounts(pathname)
-    const matchedCount = matchedMounts.length
     let routeHandlers = EMPTY_HANDLERS
 
     if (match !== null) {
@@ -342,178 +539,18 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
     const entryBaseUrl = req.baseUrl === undefined ? '' : req.baseUrl
     req.baseUrl = entryBaseUrl
 
-    // What the frame removed, so leaving it can put it back rather than
-    // reinstating a snapshot and discarding whatever middleware wrote since.
-    // Only read under `frameEntered`, which the mount branch sets after
-    // assigning all four; initialized rather than left bare to keep each slot
-    // one type from the start.
-    let framePrefix = ''
-    let frameUrl = ''
-    let frameSourceUrl = ''
-    let frameSourcePath = ''
+    const d = new Dispatch(
+      req,
+      res,
+      next,
+      entryBaseUrl,
+      matchedMounts,
+      routeHandlers,
+      globalMiddlewares.length
+    )
+    d.handleNext = err => handleNext(d, err)
 
-    const globalCount = globalMiddlewares.length
-
-    let syncCount = 0
-    let mountIndex = 0
-    let globalIndex = 0
-    let routeStarted = false
-    let frameEntered = false
-    let current = EMPTY_HANDLERS
-    let cursor = 0
-    let limit = 0
-
-    // Extracted because four layer transitions undo a frame; entry has one site
-    // and stays inline.
-    const leaveFrame = () => {
-      frameEntered = false
-      req.baseUrl = entryBaseUrl
-      if (req.url === frameUrl) {
-        req.url = frameSourceUrl
-        req.path = frameSourcePath
-        pathSource = frameSourceUrl
-        return
-      }
-      // A middleware rewrote the url inside the frame. Express re-prepends
-      // what it removed, so the edit survives instead of being reverted.
-      req.url = framePrefix + (req.url === '/' ? '' : req.url)
-      req.path = parseUrl(req.url).path
-      pathSource = req.url
-    }
-
-    // Both exits abandon the remaining middleware and undo the frame, so the
-    // parent router and the error handler see what the client actually sent.
-    // Truthiness, not `!== undefined`: `next(null)` is the ordinary callback
-    // idiom for success and must not be read as a failure.
-    const handleNext = err => {
-      if (err) {
-        // Express only lets 'route' skip a route's own handler stack; from
-        // middleware it continues to the next layer like a plain next().
-        if (err === 'route') {
-          if (routeStarted) cursor = limit
-          return executeLoop()
-        }
-        mountIndex = matchedCount
-        globalIndex = globalCount
-        routeStarted = true
-        limit = 0
-        if (frameEntered) leaveFrame()
-        if (err !== 'router') return finalhandler(err, req, res, next)
-        if (next !== undefined) return next()
-        return executeLoop()
-      }
-      if (++syncCount > SYNC_ITERATION_LIMIT) {
-        syncCount = 0
-        return setImmediate(executeLoop)
-      }
-      executeLoop()
-    }
-
-    // Globals and mount frames interleave by registration order, which is what
-    // `globalsBefore` records. Only a mount runs on a stripped request, so
-    // every other layer restores first: a global sitting between two mounts
-    // belongs to the router, not to whichever frame happened to precede it.
-    const executeLoop = () => {
-      if (res.writableEnded) return
-
-      // Re-derive rather than carry a snapshot forward: a middleware that
-      // rewrote req.url leaves req.path describing the previous request, and
-      // the frame below measures its prefix against req.url.
-      if (req.url !== pathSource) {
-        pathSource = req.url
-        req.path = parseUrl(req.url).path
-      }
-
-      while (cursor >= limit) {
-        if (
-          mountIndex < matchedCount &&
-          globalIndex >= matchedMounts[mountIndex].globalsBefore
-        ) {
-          // Leave the previous frame first: each mount strips its prefix off
-          // the whole request, not off what the mount before it left behind.
-          if (frameEntered) leaveFrame()
-          const mount = matchedMounts[mountIndex++]
-          const segments = mount.segments
-          // Derived from the url as it stands, not from a request-entry
-          // snapshot: an earlier middleware may have rewritten it, and the
-          // frame has to strip the prefix off what is actually there.
-          frameSourceUrl = req.url
-          frameSourcePath = req.path
-          const originUrl = toOriginForm(frameSourceUrl)
-          const urlPrefixEnd = getSegmentEnd(originUrl, segments)
-          framePrefix = originUrl.substring(0, urlPrefixEnd)
-          req.baseUrl = entryBaseUrl + framePrefix
-          req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
-          frameUrl = req.url
-          // Without collapsing, the path is the url's path half and both walks
-          // stop at the same delimiter, so the second one is derivable. The
-          // `desyncs` sweep in test/mount-invariant.js is what holds this: it
-          // fails if url and path ever stop describing the same resource.
-          const pathPrefixEnd = ignoreDuplicateSlashes
-            ? getSegmentEnd(frameSourcePath, segments)
-            : urlPrefixEnd < frameSourcePath.length
-              ? urlPrefixEnd
-              : frameSourcePath.length
-          req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
-          pathSource = req.url
-          frameEntered = true
-          current = mount.mw
-          cursor = 0
-          limit = mount.mw.length
-          continue
-        }
-
-        if (globalIndex < globalCount) {
-          if (frameEntered) leaveFrame()
-          current = globalMiddlewares
-          cursor = globalIndex
-          globalIndex =
-            mountIndex < matchedCount
-              ? matchedMounts[mountIndex].globalsBefore
-              : globalCount
-          limit = globalIndex
-          continue
-        }
-
-        if (!routeStarted) {
-          routeStarted = true
-          if (frameEntered) leaveFrame()
-          current = routeHandlers
-          cursor = 0
-          limit = routeHandlers.length
-          continue
-        }
-
-        // Pass a terminator, not handleNext. A 4-arg Express-style
-        // finalhandler that does `if (!err) return next()` would otherwise
-        // re-enter this branch forever on unmatched top-level requests.
-        if (next !== undefined) return next()
-        return finalhandler(undefined, req, res, err => {
-          if (err) return finalhandler(err, req, res, next)
-          if (!res.writableEnded) {
-            res.statusCode = 404
-            res.end()
-          }
-        })
-      }
-
-      const middleware = current[cursor++]
-
-      try {
-        const result = middleware(req, res, handleNext)
-        if (
-          result !== null &&
-          result !== undefined &&
-          typeof result.then === 'function'
-        ) {
-          result.then(undefined, handleNext)
-        }
-      } catch (err) {
-        handleNext(err)
-      }
-    }
-
-    executeLoop()
+    executeLoop(d)
   }
 
   const registerMount = mountPath => {

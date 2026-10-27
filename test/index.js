@@ -347,6 +347,33 @@ for (const [kind, throwing] of [
   })
 }
 
+test('returning null is not an error', t => {
+  let error
+  const router = Router((err, req, res) => {
+    error = err
+    res.end('handled')
+  })
+  router.use((req, res, next) => {
+    next()
+    return null
+  })
+  router.get('/', (req, res) => res.end('ok'))
+
+  const res = {
+    writableEnded: false,
+    statusCode: 200,
+    body: '',
+    end (body) {
+      this.body = body
+      this.writableEnded = true
+    }
+  }
+  router({ method: 'GET', url: '/' }, res)
+
+  t.is(error, undefined)
+  t.is(res.body, 'ok')
+})
+
 test('`.use` with error', async t => {
   const router = Router(final)
 
@@ -468,6 +495,27 @@ test('many sync middlewares', async t => {
 
   const url = await runServer(t, router)
   t.is(await got(url), '200')
+})
+
+test('synchronous next() yields before the stack grows without bound', async t => {
+  const router = Router(final)
+  let depth = 0
+  let maxDepth = 0
+  for (let i = 0; i < 250; i++) {
+    router.use((req, res, next) => {
+      depth++
+      if (depth > maxDepth) maxDepth = depth
+      next()
+      depth--
+    })
+  }
+  router.get('/', (req, res) => res.end(String(maxDepth)))
+
+  const url = await runServer(t, router)
+
+  // The middleware that crosses the limit is still on the stack when the
+  // continuation is deferred, so the depth is one past the limit.
+  t.is(await got(url), '101')
 })
 
 test('req.params is an empty object on no-match', async t => {
@@ -923,6 +971,31 @@ test('req.originalUrl keeps the target the client sent', async t => {
   const url = await runServer(t, router)
 
   t.is(await got(new URL('/admin/x?q=1', url).toString()), '/admin/x?q=1')
+})
+
+test('a request for / keeps its url through a global and the route', async t => {
+  const router = Router(final)
+  let seen
+  router.use((req, res, next) => {
+    seen = req.url
+    next()
+  })
+  router.get('/', (req, res) => res.end(`${seen}|${req.url}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(url), '/|/')
+})
+
+test('an error on / leaves the request url intact', async t => {
+  const router = Router((err, req, res) => res.end(`${err.message}|${req.url}`))
+  router.get('/', () => {
+    throw new Error('boom')
+  })
+
+  const url = await runServer(t, router)
+
+  t.is(await got(url), 'boom|/')
 })
 
 test('an error handler sees the unstripped request', async t => {
@@ -1521,6 +1594,20 @@ test('a url rewritten inside a mount survives leaving it', async t => {
     await got(new URL('/admin/x', url).toString()),
     '/admin/rewritten|/admin/rewritten'
   )
+})
+
+test('a url rewritten to / inside a mount restores the prefix', async t => {
+  const router = Router(final)
+
+  router.use('/admin', (req, res, next) => {
+    req.url = '/'
+    next()
+  })
+  router.get('/admin/x', (req, res) => res.end(`${req.url}|${req.path}`))
+
+  const url = await runServer(t, router)
+
+  t.is(await got(new URL('/admin/x', url).toString()), '/admin|/admin')
 })
 
 test("next('route') from middleware continues to the next layer", async t => {
