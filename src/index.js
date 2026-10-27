@@ -426,14 +426,14 @@ module.exports = (finalhandler = requiredFinalHandler(), options = {}) => {
         req.url = ensureLeadingSlash(originUrl.substring(urlPrefixEnd))
         d.frameUrl = req.url
         // Without collapsing, the path is the url's path half and both walks
-        // stop at the same delimiter, so the second one is derivable. The
-        // `desyncs` sweep in test/mount-invariant.js is what holds this: it
-        // fails if url and path ever stop describing the same resource.
+        // stop at the same delimiter, so the second one is derivable.
+        // substring clamps an index past the end, so a shorter path needs no
+        // separate bound. The `desyncs` sweep in test/mount-invariant.js is
+        // what holds this: it fails if url and path ever stop describing the
+        // same resource.
         const pathPrefixEnd = ignoreDuplicateSlashes
           ? getSegmentEnd(frameSourcePath, segments)
-          : urlPrefixEnd < frameSourcePath.length
-            ? urlPrefixEnd
-            : frameSourcePath.length
+          : urlPrefixEnd
         req.path = frameSourcePath.substring(pathPrefixEnd) || '/'
         d.pathSource = req.url
         d.frameEntered = true
