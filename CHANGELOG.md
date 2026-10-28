@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### 3.0.10 (2026-10-28)
+
+
+### Bug Fixes
+
+* declare the real minimum Node.js version ([#48](https://github.com/Kikobeats/router-http/issues/48)) ([597649f](https://github.com/Kikobeats/router-http/commit/597649f181446e546e5b02f428f4233d24956d85))
+
 ### 3.0.9 (2026-10-28)
 
 ### 3.0.8 (2026-10-27)
