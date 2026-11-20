@@ -46,7 +46,7 @@
     "got": "11",
     "nano-staged": "latest",
     "polka": "~0.5.2",
-    "router": "2.2.0",
+    "router": "2.3.0",
     "simple-git-hooks": "latest",
     "standard": "latest",
     "standard-version": "latest"
